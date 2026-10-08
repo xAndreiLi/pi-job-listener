@@ -232,7 +232,10 @@ event now, which removed more than half of it; the rest is spawning a shell and 
   log are available. A recycled pid could be mistaken for a live job; the wake reports the exit code
   as unknown rather than inventing one.
 - Jobs survive `session_shutdown` on purpose — killing a 20-minute build because a session ended is worse.
-  The Laya server is *not* managed yet; start it yourself and set `LAYA_IDLE_UNLOAD_SECONDS=0`.
+- A **managed model server does not survive it**: a server this session started is stopped on shutdown.
+  If pi is killed rather than shut down, that stop never runs and the server is orphaned — the same class
+  of problem the job registry solves for jobs, and not solved here. `session_shutdown` firing on a live
+  path has also not been verified end to end, only its two halves separately.
 - Output is not streamed to the transcript while a job runs detached; it goes to the log only.
 - `bash` is overridden for every session the extension is loaded in.
 - Every command writes a log file, inline ones included, and nothing prunes them: a long session leaves
