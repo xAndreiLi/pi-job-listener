@@ -8,3 +8,6 @@ dist/
 
 # test artefacts
 scripts/live-test-records.jsonl
+
+# derived from session logs by `npm run training:data`; regenerate rather than commit
+training-data.jsonl
