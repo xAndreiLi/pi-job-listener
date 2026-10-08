@@ -244,9 +244,20 @@ export default function (pi: ExtensionAPI) {
 		pendingWakes.length = 0;
 
 		const needsAttention = batch.filter((item) => item.attention);
-		const directive = needsAttention.length
-			? `Look at ${needsAttention.map((item) => item.id).join(", ")} before replying. Nothing else here needs a response.`
-			: "No reply needed — nothing here changes what you were doing. Do not summarise this wake.";
+		const outstanding = [...jobs.values()].filter((job) => job.state === "running").length;
+		// Two things the agent needs to know before it writes anything up: whether this batch needs a
+		// reply, and whether the picture is even complete yet. Answering a half-finished batch is
+		// answering the wrong question.
+		const directive = [
+			outstanding
+				? `${outstanding} still running — wait for ${outstanding === 1 ? "it" : "them"}, or cancel with the jobs tool, before writing up results.`
+				: "",
+			needsAttention.length
+				? `Look at ${needsAttention.map((item) => item.id).join(", ")} before replying. Nothing else here needs a response.`
+				: "No reply needed — nothing here changes what you were doing. Do not summarise this wake.",
+		]
+			.filter(Boolean)
+			.join(" ");
 
 		const text =
 			batch.length === 1
@@ -508,6 +519,7 @@ export default function (pi: ExtensionAPI) {
 			"Long commands return a job id instead of output: the process keeps running and you are woken when it needs you. Do not re-run a command that returned a job id.",
 			"Never use sleep to wait for something. Start the process and wait for the wake message.",
 			"Raise stall_seconds for a command that is expected to be quiet for a while; lower it when you need to hear about a hang quickly.",
+			"A wake that names jobs still running means your picture is incomplete: wait for them, or cancel them with the jobs tool, before writing up results. A wake that says no reply is needed is a notification — carry on without summarising it.",
 		],
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const id = `job-${++counter}`;

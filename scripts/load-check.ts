@@ -241,20 +241,33 @@ await check("a batch of jobs collapses to one line each in a single wake", async
 	assert.match(text, /Look at job-\d+(, job-\d+)* before replying\. Nothing else here needs a response\.$/);
 });
 
-await check("a clean batch reads as a notification, not a summons", async () => {
+await check("a wake while other jobs are still running says the picture is incomplete", async () => {
 	const before = sent.length;
 	busy = true;
-	await Promise.all(
-		[0, 1].map((i) =>
-			tools.get("bash")!.execute(
-				`t-clean-${i}`,
-				{ command: "node scripts/fake-job.mjs build", stall_seconds: 60 },
-				undefined,
-				undefined,
-				ctx,
+	// Two jobs that finish, plus one that keeps going, so the batch settles while work remains.
+	const results = await Promise.all(
+		[
+			[0, 1].map((i) =>
+				tools.get("bash")!.execute(
+					`t-clean-${i}`,
+					{ command: "node scripts/fake-job.mjs build", stall_seconds: 60 },
+					undefined,
+					undefined,
+					ctx,
+				),
 			),
-		),
+			[
+				tools.get("bash")!.execute(
+					"t-long",
+					{ command: "node scripts/fake-job.mjs tick 25 1000", stall_seconds: 60 },
+					undefined,
+					undefined,
+					ctx,
+				),
+			],
+		].flat(),
 	);
+	const longJobId = results[2]?.details?.job_id as string | undefined;
 	await waitWithHeartbeat(11_000, "waiting for two clean jobs");
 	busy = false;
 	for (const handler of handlers.get("agent_settled") ?? []) await handler({}, ctx);
@@ -264,9 +277,15 @@ await check("a clean batch reads as a notification, not a summons", async () => 
 	assert.match(text, /^2 jobs finished · nothing failed$/m, `expected the no-failure header, got: ${text.slice(0, 140)}`);
 	assert.match(
 		text,
-		/No reply needed — nothing here changes what you were doing\. Do not summarise this wake\.$/,
-		"a clean batch must tell the agent it needs no response",
+		/1 still running — wait for it, or cancel with the jobs tool, before writing up results\./,
+		"a wake with work outstanding must say so",
 	);
+	assert.match(text, /No reply needed — nothing here changes what you were doing\. Do not summarise this wake\.$/);
+
+	// Clean up: the long job must not outlive the check.
+	if (longJobId) {
+		await tools.get("jobs")!.execute("t-kill", { action: "kill", job_id: longJobId }, undefined, undefined, ctx);
+	}
 });
 
 console.log(failures === 0 ? "\nload check passed" : `\n${failures} check(s) failed`);
