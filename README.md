@@ -137,22 +137,18 @@ you to go and use it rather than write more code.
 While anything is running, the extension draws a small board above the editor and a status line:
 
 ```
-jobs · 1 running · 1 failed
+jobs · 1 running
 ▶ job-2  pnpm build --filter web        14s          63 ln
            ↳ transforming (128) src/components/Chart.tsx
-✓ job-1  node scripts/fake-job.mjs fast  0s           1 ln
-✗ job-3  pytest -q                      failed · exit 1  412 ln
-           ↳ 1 failed, 311 passed in 42.19s
 ```
 
-- `▶` running, `✓` clean exit, `✗` anything else. Elapsed time ticks once a second, and switches to
-  `quiet 14s` when a job has gone silent for longer than its stall threshold — the same condition that
-  produces a stall wake.
+- `▶` running, with elapsed time ticking once a second and switching to `quiet 14s` when the job has
+  gone silent for longer than its stall threshold — the same condition that produces a stall wake.
 - **The newest line each job printed**, so the board says what a job is doing without opening its log.
-- **`⚠ needs a look`** on a *running* job the watcher is concerned about. Finished jobs never carry it:
-  their exit code already says whether they went well.
-- Finished jobs stay for 30 s so the outcome is visible, then clear themselves. With nothing running
-  and nothing recent, the board and the status line both disappear.
+- **`⚠ needs a look`** when the watcher is concerned about what the job is printing.
+- **Only jobs still running appear.** A finished job's outcome is already in the transcript, as the tool
+  result and as the wake, so the board never becomes a history of things that are over: when the last
+  job ends, the board and the status line both disappear.
 
 The board deliberately shows no model names, no mode names and no confidence numbers. A confidence that
 has not been calibrated reads as precision the watcher does not have, and which component reached a

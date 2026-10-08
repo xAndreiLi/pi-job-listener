@@ -69,10 +69,8 @@ interface Ctx {
 
 const WIDGET_KEY = "pi-job-listener";
 const STATUS_KEY = "pi-job-listener";
-/** Rows kept on the board; older jobs scroll into the event log. */
+/** Rows kept on the board; older jobs are still in the transcript. */
 const BOARD_ROWS = 5;
-/** How long a finished job stays on the board. */
-const RECENT_MS = 30_000;
 const TICK_MS = 1_000;
 
 export default function (pi: ExtensionAPI) {
@@ -176,43 +174,38 @@ export default function (pi: ExtensionAPI) {
 		const ui = ctxRef?.ui;
 		if (!ctxRef?.hasUI || !ui) return;
 
-		const all = [...jobs.values()];
-		const active = all.filter((job) => job.state === "running");
-		// Finished jobs linger briefly so the outcome is visible, then get out of the way.
-		const visible = all.filter(
-			(job) => job.state === "running" || (job.endedAt ?? 0) > Date.now() - RECENT_MS,
-		);
+		// Only work in flight belongs on the board. A finished job's outcome is already in the
+		// transcript — as the tool result and as the wake — so repeating it here is clutter that never
+		// leaves the screen. The board is a picture of what is happening now.
+		const running = [...jobs.values()].filter((job) => job.state === "running");
 
 		if (ui.setStatus) {
-			if (active.length === 0) {
+			if (running.length === 0) {
 				ui.setStatus(STATUS_KEY, undefined);
 			} else {
-				const oldest = active.reduce((a, b) => (a.startedAt <= b.startedAt ? a : b));
+				const oldest = running.reduce((a, b) => (a.startedAt <= b.startedAt ? a : b));
 				ui.setStatus(
 					STATUS_KEY,
-					`\u2699 ${active.length} job${active.length > 1 ? "s" : ""} \u00b7 ${oneLine(oldest.command, 24)} \u00b7 ${secondsSince(oldest.startedAt)}s`,
+					`\u2699 ${running.length} job${running.length > 1 ? "s" : ""} \u00b7 ${oneLine(oldest.command, 24)} \u00b7 ${secondsSince(oldest.startedAt)}s`,
 				);
 			}
 		}
 
 		if (ui.setWidget) {
-			if (visible.length === 0) {
+			if (running.length === 0) {
 				ui.setWidget(WIDGET_KEY, undefined);
 			} else {
-				const running = visible.filter((job) => job.state === "running").length;
-				const failed = visible.filter((job) => job.state !== "running" && (job.exitCode ?? 0) !== 0).length;
-				const header = running
-					? `jobs \u00b7 ${running} running${failed ? ` \u00b7 ${failed} failed` : ""}`
-					: `jobs \u00b7 ${visible.length} finished${failed ? ` \u00b7 ${failed} failed` : ""}`;
-				ui.setWidget(WIDGET_KEY, [header, ...visible.slice(-BOARD_ROWS).flatMap(jobRows)], {
-					placement: "aboveEditor",
-				});
+				ui.setWidget(
+					WIDGET_KEY,
+					[`jobs \u00b7 ${running.length} running`, ...running.slice(-BOARD_ROWS).flatMap(jobRows)],
+					{ placement: "aboveEditor" },
+				);
 			}
 		}
 
 		// Elapsed time only moves while something is on the board; idle costs nothing.
-		if (visible.length > 0 && !ticker) ticker = setInterval(renderBoard, TICK_MS);
-		if (visible.length === 0 && ticker) {
+		if (running.length > 0 && !ticker) ticker = setInterval(renderBoard, TICK_MS);
+		if (running.length === 0 && ticker) {
 			clearInterval(ticker);
 			ticker = undefined;
 		}

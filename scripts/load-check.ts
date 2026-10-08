@@ -196,18 +196,18 @@ await check("the wake fires when the detached job ends, and is a pointer not a s
 	assert.ok(!/transforming|modules transformed/.test(text), "the wake must not carry output");
 });
 
-await check("the board stays clean of internals once the job is done", async () => {
+await check("the board clears the moment nothing is running", async () => {
 	assert.equal(
 		lastStatus.get("pi-job-listener"),
 		undefined,
 		"the status line should clear once nothing is running",
 	);
-	const board = (lastWidget.get("pi-job-listener") ?? []).join("\n");
-	assert.match(board, /jobs · \d+ finished/, `expected a finished header, got: ${board}`);
-	assert.match(board, /✓|✗/, "a finished job should show its outcome");
-	assert.ok(!/laya|shadow|confidence/i.test(board), `board leaks internals: ${board}`);
-	// A finished job needs no flag: the outcome already says whether it went well.
-	assert.ok(!/needs a look/.test(board), "a finished job should not be flagged as needing attention");
+	// A finished job's outcome is in the transcript already; leaving it on the board is clutter.
+	assert.equal(
+		lastWidget.get("pi-job-listener"),
+		undefined,
+		`the board should be gone once nothing runs, got: ${JSON.stringify(lastWidget.get("pi-job-listener"))}`,
+	);
 });
 
 await check("shadow gate recorded answers in the event log", async () => {
