@@ -5,3 +5,6 @@ dist/
 
 # job history is runtime state, not source
 .jobs/
+
+# test artefacts
+scripts/live-test-records.jsonl

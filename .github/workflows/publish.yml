@@ -1,0 +1,58 @@
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm ci
+      - name: Check NPM_TOKEN
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN}" ]; then
+            echo "::error::NPM_TOKEN secret is missing. Create an npm Automation token, or a granular access token with 'Bypass 2FA' and read/write on All packages, then add it as the NPM_TOKEN repository secret."
+            exit 1
+          fi
+          npm whoami
+      - run: npm run test:all
+      - name: Check published version
+        id: published
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if npm view "pi-job-listener@${version}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "pi-job-listener@${version} is already published; skipping publish so tag pushes stay idempotent."
+          fi
+      - name: Publish
+        if: steps.published.outputs.exists != 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_IGNORE_SCRIPTS: "true"
+        run: |
+          set +e
+          npm publish --provenance --access public > publish.log 2>&1
+          code=$?
+          cat publish.log
+          if [ $code -ne 0 ]; then
+            grep -E "npm error|EOTP|E403|E404|ENEEDAUTH|error" publish.log | head -20 | while IFS= read -r line; do
+              echo "::error::publish: ${line}"
+            done
+          fi
+          exit $code
