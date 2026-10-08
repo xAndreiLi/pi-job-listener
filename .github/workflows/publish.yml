@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  # Required: the OIDC token is how npm authenticates this workflow. No npm secret is involved.
   id-token: write
 
 jobs:
@@ -14,26 +15,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
           cache: npm
+      # Node 22 ships npm 10.x, which is too old for trusted publishing (11.5.1+ required,
+      # 11.15+ for `npm trust`).
+      - name: npm 11.15+ for trusted publishing
+        run: npm install -g npm@^11.15.0 && npm --version
       - run: npm ci
-      - name: Check NPM_TOKEN
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "${NODE_AUTH_TOKEN}" ]; then
-            echo "::error::NPM_TOKEN secret is missing. Create an npm Automation token, or a granular access token with 'Bypass 2FA' and read/write on All packages, then add it as the NPM_TOKEN repository secret."
-            exit 1
-          fi
-          npm whoami
       - run: npm run test:all
       - name: Check published version
         id: published
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           version=$(node -p "require('./package.json').version")
           if npm view "pi-job-listener@${version}" version >/dev/null 2>&1; then
@@ -42,12 +36,14 @@ jobs:
           fi
       - name: Publish
         if: steps.published.outputs.exists != 'true'
+        # An empty NODE_AUTH_TOKEN is deliberate: setup-node configures a registry-url, and when an
+        # auth token is present npm uses it instead of the OIDC exchange. OIDC needs it unset or empty.
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ""
           NPM_CONFIG_IGNORE_SCRIPTS: "true"
         run: |
           set +e
-          npm publish --provenance --access public > publish.log 2>&1
+          npm publish --access public > publish.log 2>&1
           code=$?
           cat publish.log
           if [ $code -ne 0 ]; then
