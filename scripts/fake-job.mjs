@@ -55,5 +55,17 @@ if (mode === "hang") {
 	process.exit(0);
 }
 
+if (mode === "tick") {
+	// Prints on a slow-but-steady cadence: slower than a stall threshold would like, but plainly alive.
+	// Used to check that silence is not re-reported every time it pauses.
+	const times = Number(process.argv[3] ?? 4);
+	const every = Number(process.argv[4] ?? 1200);
+	for (let i = 1; i <= times; i++) {
+		console.log(`tick ${i}`);
+		await sleep(every);
+	}
+	process.exit(0);
+}
+
 console.error(`unknown mode: ${mode}`);
 process.exit(2);

@@ -257,5 +257,25 @@ await check("a job from a previous session is adopted and watched through its lo
 	assert.match(job.tail.join("\n"), /AssertionError/);
 });
 
+await check("a job outliving its stall threshold reports silence once, not each time it pauses", async () => {
+	// Prints every 1.2 s against a 1 s threshold, so it is briefly quiet in every cycle. Without a
+	// cooldown that is a stall report per pause; with one it is a single report.
+	let reports = 0;
+	const job = startJob({
+		id: "t-cooldown",
+		command: `${FIXTURE} tick 4 1200`,
+		cwd: process.cwd(),
+		logPath: join(dir, "cooldown.log"),
+		stallSeconds: 1,
+		onStall: () => {
+			reports += 1;
+		},
+		onTerminal: () => {},
+	});
+	await new Promise((resolve) => setTimeout(resolve, 6_000));
+	assert.equal(job.state, "exited", "the fixture should have finished");
+	assert.equal(reports, 1, `expected one stall report, got ${reports}`);
+});
+
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);

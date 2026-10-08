@@ -60,8 +60,8 @@ export interface Job {
 	stallSeconds: number;
 	/** Absolute deadline when the caller passed a `timeout`. */
 	timeoutMs?: number;
-	/** True once a stall has been reported for the current quiet period. */
-	stallReported: boolean;
+	/** When the last stall report went out, so repeats can be rate-limited. */
+	stallReportedAt?: number;
 	/** Newest lines, newest last. Bounded — this is what the gate and the pointer see. */
 	tail: string[];	lastGateAt: number;
 	detached: boolean;
@@ -147,7 +147,6 @@ export function startJob(options: StartOptions): Job {
 		tail: [],
 		lastGateAt: 0,
 		detached: false,
-		stallReported: false,
 		pending: "",
 		timers: {},
 	};
@@ -284,16 +283,39 @@ export function jobsSummary(job: Job): string {
 }
 
 /**
- * (Re)arm the silence timer. It reports once and does not re-arm itself: after the agent has been
- * told, the next report waits for the job to say something and then fall quiet again. Otherwise a
- * build that stays silent for five minutes would wake the agent every ten seconds.
+ * How long a job must stay quiet before silence is worth mentioning again, as a multiple of its
+ * own threshold. Without this, a job that prints more slowly than the threshold reports a stall
+ * every time it pauses — one measured job printing every 20 s against a 10 s threshold produced
+ * six reports in two minutes, none of which carried new information.
  */
-function resetStallTimer(job: Job, onStall?: StallReport): void {
+const STALL_COOLDOWN_FACTOR = 6;
+
+function stallCooldownMs(job: Job): number {
+	return Math.max(1, job.stallSeconds) * STALL_COOLDOWN_FACTOR * 1_000;
+}
+
+function armStall(job: Job, delayMs: number, onStall?: StallReport): void {
 	if (job.timers.stall) clearTimeout(job.timers.stall);
 	job.timers.stall = setTimeout(() => {
 		if (job.state !== "running") return;
+		const sinceReport = job.stallReportedAt ? Date.now() - job.stallReportedAt : Number.POSITIVE_INFINITY;
+		const cooldown = stallCooldownMs(job);
+		if (sinceReport < cooldown) {
+			// Too soon to say it again. Wait out the remainder rather than repeating.
+			armStall(job, cooldown - sinceReport, onStall);
+			return;
+		}
+		job.stallReportedAt = Date.now();
 		onStall?.(job);
-	}, Math.max(1, job.stallSeconds) * 1000);
+	}, Math.max(1, delayMs));
+}
+
+/**
+ * (Re)arm the silence timer. It does not re-arm itself: the next report waits for the job to say
+ * something, fall quiet again, and clear the cooldown.
+ */
+function resetStallTimer(job: Job, onStall?: StallReport): void {
+	armStall(job, Math.max(1, job.stallSeconds) * 1_000, onStall);
 }
 
 /**
@@ -441,7 +463,6 @@ export function adoptJob(options: AdoptOptions): { job: Job; stop: () => void } 
 		lastGateAt: 0,
 		detached: true,
 		adopted: true,
-		stallReported: false,
 		registryKey: registryKey(entry.session, entry.job),
 		pending: "",
 		timers: {},
@@ -475,7 +496,6 @@ export function adoptJob(options: AdoptOptions): { job: Job; stop: () => void } 
 		if (next > size) {
 			size = next;
 			job.lastOutputAt = now;
-			job.stallReported = false;
 			job.totalChars = next;
 			// Re-read the end of the log rather than accumulating deltas: we have no stdout here.
 			const lines = readLogTail(entry.logPath)
@@ -486,10 +506,13 @@ export function adoptJob(options: AdoptOptions): { job: Job; stop: () => void } 
 			options.onOutput(job);
 		}
 		if (!pidAlive(job.pid)) finish("exited");
-		else if (now - job.lastOutputAt > job.stallSeconds * 1000 && !job.stallReported) {
+		else if (
+			now - job.lastOutputAt > job.stallSeconds * 1000 &&
+			(!job.stallReportedAt || now - job.stallReportedAt > stallCooldownMs(job))
+		) {
 			// Report, never kill: an adopted process has no stdout handle, so all we know is that its
 			// log stopped growing — which a buffered or file-redirected command does on purpose.
-			job.stallReported = true;
+			job.stallReportedAt = now;
 			options.onStall(job);
 		}
 	}, options.pollMs ?? 2_000);
