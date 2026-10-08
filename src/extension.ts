@@ -121,7 +121,23 @@ export default function (pi: ExtensionAPI) {
 		return Math.max(0, Math.round((to - from) / 1000));
 	}
 
-	function jobRow(job: Job): string {
+	/** The newest line the job printed — what it is doing right now, without opening the log. */
+	function lastOutputLine(job: Job, max = 60): string {
+		for (let i = job.tail.length - 1; i >= 0; i--) {
+			const line = (job.tail[i] ?? "").trim();
+			if (line) return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+		}
+		return "";
+	}
+
+	/**
+	 * What a job looks like on the board: facts, plus the last thing it said.
+	 *
+	 * No model names, no mode names, and no confidence numbers. A confidence the watcher has not
+	 * calibrated reads as precision it does not have, and how it reaches its answer is not something
+	 * anyone watching a build needs to know.
+	 */
+	function jobRows(job: Job): string[] {
 		const running = job.state === "running";
 		const quietFor = running ? secondsSince(job.lastOutputAt) : 0;
 		const icon = running ? "\u25b6" : job.exitCode === 0 ? "\u2713" : "\u2717";
@@ -130,14 +146,17 @@ export default function (pi: ExtensionAPI) {
 				? `quiet ${quietFor}s`
 				: `${secondsSince(job.startedAt)}s`
 			: job.state === "exited"
-				? `exit ${job.exitCode}`
+				? job.exitCode === 0
+					? "done"
+					: `failed · exit ${job.exitCode}`
 				: job.state;
-		const verdict = gateVerdicts.get(job.id);
-		// Shadow mode: this is what Laya *would* have done, and it wakes nobody.
-		const gate = verdict
-			? `laya ${verdict.choice === "wake" ? "WAKE" : verdict.choice} ${verdict.confidence.toFixed(2)}`
-			: "laya —";
-		return `${icon} ${job.id.padEnd(6)} ${oneLine(job.command, 30).padEnd(30)} ${state.padEnd(8)} ${String(job.lines).padStart(4)} ln  ${gate}`;
+
+		// Flag a job the watcher is concerned about *while it is still running*: a finished job's exit
+		// code already says everything, and a flag there would be noise on top of the news.
+		const flagged = running && gateVerdicts.get(job.id)?.choice === "wake";
+		const head = `${icon} ${job.id.padEnd(6)} ${oneLine(job.command, 32).padEnd(32)} ${state.padEnd(16)} ${String(job.lines).padStart(5)} ln${flagged ? "   \u26a0 needs a look" : ""}`;
+		const last = lastOutputLine(job);
+		return last ? [head, `         \u21b3 ${last}`] : [head];
 	}
 
 	/**
@@ -171,11 +190,14 @@ export default function (pi: ExtensionAPI) {
 			if (visible.length === 0) {
 				ui.setWidget(WIDGET_KEY, undefined);
 			} else {
-				ui.setWidget(
-					WIDGET_KEY,
-					["jobs \u00b7 gate shadow, not acted on", ...visible.slice(-BOARD_ROWS).map(jobRow)],
-					{ placement: "aboveEditor" },
-				);
+				const running = visible.filter((job) => job.state === "running").length;
+				const failed = visible.filter((job) => job.state !== "running" && (job.exitCode ?? 0) !== 0).length;
+				const header = running
+					? `jobs \u00b7 ${running} running${failed ? ` \u00b7 ${failed} failed` : ""}`
+					: `jobs \u00b7 ${visible.length} finished${failed ? ` \u00b7 ${failed} failed` : ""}`;
+				ui.setWidget(WIDGET_KEY, [header, ...visible.slice(-BOARD_ROWS).flatMap(jobRows)], {
+					placement: "aboveEditor",
+				});
 			}
 		}
 

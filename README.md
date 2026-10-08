@@ -137,19 +137,26 @@ you to go and use it rather than write more code.
 While anything is running, the extension draws a small board above the editor and a status line:
 
 ```
-jobs · gate shadow, not acted on
-▶ job-2  pnpm build --filter web        14s        63 ln  laya wait 0.37
-✓ job-1  node scripts/fake-job.mjs fast  0s         1 ln  laya —
-✗ job-3  pytest -q                      exit 1     412 ln  laya WAKE 0.61
+jobs · 1 running · 1 failed
+▶ job-2  pnpm build --filter web        14s          63 ln
+           ↳ transforming (128) src/components/Chart.tsx
+✓ job-1  node scripts/fake-job.mjs fast  0s           1 ln
+✗ job-3  pytest -q                      failed · exit 1  412 ln
+           ↳ 1 failed, 311 passed in 42.19s
 ```
 
-- `▶` running, `✓` clean exit, `✗` anything else. Elapsed time ticks once a second while a job runs,
-  and switches to `quiet 14s` when a job has gone silent for longer than its stall threshold — the
-  same condition that produces a stall wake.
-- `laya WAKE 0.61` is the shadow gate's answer, uppercased when it wanted to wake the agent. It is a
-  preview of what the gate *would* do — in shadow mode it wakes nobody.
+- `▶` running, `✓` clean exit, `✗` anything else. Elapsed time ticks once a second, and switches to
+  `quiet 14s` when a job has gone silent for longer than its stall threshold — the same condition that
+  produces a stall wake.
+- **The newest line each job printed**, so the board says what a job is doing without opening its log.
+- **`⚠ needs a look`** on a *running* job the watcher is concerned about. Finished jobs never carry it:
+  their exit code already says whether they went well.
 - Finished jobs stay for 30 s so the outcome is visible, then clear themselves. With nothing running
   and nothing recent, the board and the status line both disappear.
+
+The board deliberately shows no model names, no mode names and no confidence numbers. A confidence that
+has not been calibrated reads as precision the watcher does not have, and which component reached a
+judgement is not something anyone watching a build needs to know.
 
 ## Configuration
 

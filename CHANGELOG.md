@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.2 — 2026-10-08
+
+### Changed
+
+- **The board shows what a job is doing, not what the watcher is called.** Each running job now carries
+  the newest line it printed, so you can see progress without opening a log.
+- Removed model names, mode names and confidence numbers from the board. A flag on a *running* job now
+  reads `⚠ needs a look`; finished jobs never carry one, because their exit code already says whether
+  they went well.
+- The header states facts — `jobs · 1 running · 1 failed` — instead of naming the mode it runs in.
+
+### Fixed
+
+- **Stall reports are rate-limited per job** (at least 6× the threshold apart, 60 s at the default).
+  A job that prints more slowly than its threshold is briefly quiet in every cycle, so it reported a
+  stall on each pause: one measured job produced six reports in two minutes, none of them new.
+- **A wake says whether it needs a reply.** A batch with a failure names the jobs worth looking at and
+  says the rest can be ignored; a clean batch says no reply is needed. A wake that arrives while other
+  jobs are still running says the picture is incomplete and to wait or cancel first.
+
 ## 0.1.1 — 2026-10-08
 
 Same source as 0.1.0. This release exists to prove the trusted-publishing path: the first version

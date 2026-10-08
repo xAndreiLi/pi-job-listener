@@ -138,10 +138,14 @@ await check("the board shows the running job while it is detached", async () => 
 	assert.match(status!, /1 job/);
 	const widget = lastWidget.get("pi-job-listener");
 	assert.ok(widget, "expected the board while a job runs");
-	assert.match(widget![0]!, /gate shadow/);
-	assert.match(widget!.join("\n"), /job-2/);
-	assert.match(widget!.join("\n"), /\u25b6/, "a running job should be marked as running");
-	assert.match(widget!.join("\n"), /laya —/, "no verdict yet, and it must say so");
+	const board = widget!.join("\n");
+	assert.match(board, /^jobs · 1 running$/m, `expected a running header, got: ${board}`);
+	assert.match(board, /job-2/);
+	assert.match(board, /▶/, "a running job should be marked as running");
+	// The last thing the job printed, so the board says what it is doing without opening the log.
+	assert.match(board, /↳ /, "each row should carry the job's newest output line");
+	// The board is for a person watching: no model names, no mode names, no invented precision.
+	assert.ok(!/laya|shadow|confidence|0\.\d\d/i.test(board), `board leaks internals: ${board}`);
 });
 
 await check("the wake fires when the detached job ends, and is a pointer not a summary", async () => {
@@ -160,20 +164,18 @@ await check("the wake fires when the detached job ends, and is a pointer not a s
 	assert.ok(!/transforming|modules transformed/.test(text), "the wake must not carry output");
 });
 
-await check("the board records Laya's verdict and clears the status line when idle", async () => {
+await check("the board stays clean of internals once the job is done", async () => {
 	assert.equal(
 		lastStatus.get("pi-job-listener"),
 		undefined,
 		"the status line should clear once nothing is running",
 	);
-	const widget = lastWidget.get("pi-job-listener") ?? [];
-	const rows = widget.join("\n");
-	if (rows.includes("laya WAKE") || rows.includes("laya wait") || rows.includes("laya ignore")) {
-		assert.match(rows, /laya (WAKE|wait|ignore) \d\.\d\d/, "a verdict should carry its confidence");
-	} else {
-		console.log("       (no gate verdict this run — the job was shorter than the gate interval)");
-	}
-	assert.match(rows, /\u2713|\u2717/, "a finished job should show its outcome");
+	const board = (lastWidget.get("pi-job-listener") ?? []).join("\n");
+	assert.match(board, /jobs · \d+ finished/, `expected a finished header, got: ${board}`);
+	assert.match(board, /✓|✗/, "a finished job should show its outcome");
+	assert.ok(!/laya|shadow|confidence/i.test(board), `board leaks internals: ${board}`);
+	// A finished job needs no flag: the outcome already says whether it went well.
+	assert.ok(!/needs a look/.test(board), "a finished job should not be flagged as needing attention");
 });
 
 await check("shadow gate recorded answers in the event log", async () => {
