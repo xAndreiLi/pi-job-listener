@@ -69,7 +69,7 @@ console.log(`\nrelease: ${current} → ${next}\n`);
 runNpm(["run", "test:all"]);
 
 runNpm(["version", next, "--no-git-tag-version", "--allow-same-version"]);
-run("git", ["add", "package.json", "CHANGELOG.md"]);
+run("git", ["add", "package.json", "package-lock.json", "CHANGELOG.md"]);
 run("git", ["commit", "-m", `chore(release): ${next}`]);
 run("git", ["tag", "-a", `v${next}`, "-m", `${PACKAGE} ${next}`]);
 
