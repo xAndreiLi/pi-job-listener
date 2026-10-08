@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.5 — 2026-10-08
+
+### Fixed
+
+- A job that produced several reports in one batch — a stall, another stall, then its exit — was
+  counted and listed once per report, so two jobs could read as "5 need attention" and the closing
+  directive named the same job three times. Reports now collapse to the latest entry per job before the
+  header, the rows and the directive are built. That also stops a job which stalled once and then
+  finished **cleanly** from being reported as needing attention.
+
 ## 0.1.4 — 2026-10-08
 
 Same content as 0.1.3. That version was accepted into the registry's staging area and never became
