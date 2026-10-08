@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4 — 2026-10-08
+
+Same content as 0.1.3. That version was accepted into the registry's staging area and never became
+available, and a re-publish was refused with `409 Conflict - Cannot publish over previously staged
+version "0.1.3"`, so the release was cut again under a new number.
+
 ## 0.1.3 — 2026-10-08
 
 ### Added
