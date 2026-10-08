@@ -1,0 +1,7 @@
+# node_modules is a junction to the pi install for local development; it must never be packed.
+node_modules/
+dist/
+*.log
+
+# job history is runtime state, not source
+.jobs/

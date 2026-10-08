@@ -1,0 +1,60 @@
+{
+	"name": "pi-job-listener",
+	"version": "0.1.0",
+	"description": "Give long-running processes back to the agent: hand back a pointer instead of blocking the turn, then wake it when the job actually needs attention.",
+	"type": "module",
+	"license": "MIT",
+	"author": "xAndreiLi",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/xAndreiLi/pi-job-listener.git"
+	},
+	"homepage": "https://github.com/xAndreiLi/pi-job-listener#readme",
+	"bugs": {
+		"url": "https://github.com/xAndreiLi/pi-job-listener/issues"
+	},
+	"engines": {
+		"node": ">=22"
+	},
+	"files": [
+		"src",
+		"README.md",
+		"CHANGELOG.md",
+		"LICENSE"
+	],
+	"keywords": [
+		"pi-package",
+		"pi",
+		"jobs",
+		"supervisor",
+		"long-running",
+		"background-process"
+	],
+	"pi": {
+		"extensions": [
+			"./src/extension.ts"
+		]
+	},
+	"scripts": {
+		"test:jobs": "jiti scripts/harness.ts",
+		"test:extension": "jiti scripts/load-check.ts",
+		"test:all": "npm run test:jobs && npm run test:extension",
+		"bench": "jiti scripts/bench.ts",
+		"training:data": "jiti scripts/build-training-data.ts",
+		"live": "node scripts/live-test.mjs",
+		"release": "jiti scripts/release.ts",
+		"prepublishOnly": "npm run test:all"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"typebox": "*"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"@types/node": "^26.6.2",
+		"jiti": "^2.7.0",
+		"typebox": "*"
+	}
+}
