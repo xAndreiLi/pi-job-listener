@@ -274,7 +274,15 @@ export default function (pi: ExtensionAPI) {
 		const batch = [...pendingWakes];
 		pendingWakes.length = 0;
 
-		const needsAttention = batch.filter((item) => item.attention);
+		// A job can appear several times in one batch — a stall report, then another, then its exit.
+		// Those are reports about one job, and a person reading "Look at job-27, job-27, job-27" is
+		// being told about three jobs that do not exist. Latest entry per job wins: it describes the
+		// state the job is actually in now.
+		const byJob = new Map<string, WakeItem>();
+		for (const item of batch) byJob.set(item.id, item);
+		const items = [...byJob.values()];
+
+		const needsAttention = [...byJob.values()].filter((item) => item.attention);
 		const outstanding = [...jobs.values()].filter((job) => job.state === "running").length;
 		// Two things the agent needs to know before it writes anything up: whether this batch needs a
 		// reply, and whether the picture is even complete yet. Answering a half-finished batch is
@@ -291,19 +299,19 @@ export default function (pi: ExtensionAPI) {
 			.join(" ");
 
 		const text =
-			batch.length === 1
-				? `${batch[0]?.text}\n${directive}`
+			items.length === 1
+				? `${items[0]?.text}\n${directive}`
 				: [
-						`${batch.length} jobs finished · ${needsAttention.length ? `${needsAttention.length} need attention` : "nothing failed"}`,
-						...(batch.length > 3 ? batch.map((item) => compactWake(item.text)) : batch.map((item) => item.text)),
+						`${items.length} job${items.length === 1 ? "" : "s"} finished · ${needsAttention.length ? `${needsAttention.length} need attention` : "nothing failed"}`,
+						...(items.length > 3 ? items.map((item) => compactWake(item.text)) : items.map((item) => item.text)),
 						directive,
 					].join("\n");
 
 		logEvent({
 			event: "wake",
-			jobs: batch.map((item) => item.id),
+			jobs: items.map((item) => item.id),
 			chars: text.length,
-			batched: batch.length,
+			reports: batch.length,
 			attention: needsAttention.length,
 		});
 		pi.sendMessage({ customType: "job-event", content: text, display: true }, { triggerTurn: true });

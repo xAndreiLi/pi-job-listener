@@ -267,6 +267,9 @@ await check("a batch of jobs collapses to one line each in a single wake", async
 	for (const row of rows) {
 		assert.match(row, /[\\/][^\\/]+\.log$/, `a compact row must still carry its log: ${row}`);
 	}
+	// One job can produce several reports in a batch; it must not be listed as several jobs.
+	const ids = text.match(/\[job-\d+\]/g) ?? [];
+	assert.equal(new Set(ids).size, ids.length, `each job should appear once, got ${ids.join(", ")}`);
 	// The directive is the point: a batch of failures has to read as a summons.
 	assert.match(text, /Look at job-\d+(, job-\d+)* before replying\. Nothing else here needs a response\.$/);
 });
