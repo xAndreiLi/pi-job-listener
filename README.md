@@ -191,6 +191,34 @@ Three rules keep this boring:
 A server started here is stopped on session shutdown, along with nothing else: jobs outlive sessions on
 purpose, because killing a twenty-minute build when a session ends is worse than an orphan.
 
+## Diagnostics
+
+Three scripts answer questions about the package rather than about the code:
+
+```bash
+npm run training:data   # the labelled gate samples this machine has accumulated
+npm run compare         # scores both candidate gate models on those samples
+npm run bench           # what the supervisor costs per command
+```
+
+Measured over 117 samples from this machine (12 wake, 105 wait) — identical question, identical state,
+both models out of the box:
+
+| | accuracy | recall (wake) | precision | TP/FP/FN/TN | p50 |
+|---|---|---|---|---|---|
+| *always answer "wait"* | *89.7%* | — | — | — | — |
+| local model | 88.9% | 16.7% | 40.0% | 2/3/10/102 | 371 ms |
+| remote (Jev) | 74.4% | 66.7% | 23.5% | 8/26/4/79 | 181 ms |
+
+Neither is a usable gate untouched, and they fail in opposite directions. The **local** model sits *below*
+the do-nothing baseline: it says "wait" almost always and catches 2 of 12 failures, so it carries no
+signal at all. The **remote** one catches 8 of 12 but fires on 26 of 105 clean runs — as a gate that is a
+spurious wake every four jobs. That measurement is why the gate is in shadow mode.
+
+`npm run compare` prints this table for whatever the sample set has become; it needs a local server for
+one half and Jev credentials for the other, and it uploads the sample text to the provider for the
+remote half, because the samples are job output.
+
 ## Develop
 
 `node_modules` is a junction to the pi install, so the peer dependencies resolve without a download.

@@ -32,7 +32,7 @@ const MAX_TAIL_CHARS = 1_200;
 const MIN_STATE_TOKEN_RATIO = 0.5;
 
 /** Terse on purpose — every word here competes with the state for the token budget. */
-const QUESTION = {
+export const GATE_QUESTION = {
 	gate: {
 		type: "choice",
 		instructions: "Should the agent be woken to look at this process?",
@@ -110,7 +110,7 @@ export async function askGate(state: string): Promise<GateVerdict | null> {
 		const res = await fetch(GATE_URL, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ model: GATE_MODEL, state, questions: QUESTION }),
+			body: JSON.stringify({ model: GATE_MODEL, state, questions: GATE_QUESTION }),
 			signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
 		});
 		if (!res.ok) return null;

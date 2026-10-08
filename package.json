@@ -40,6 +40,7 @@
 		"test:extension": "jiti scripts/load-check.ts",
 		"test:all": "npm run test:jobs && npm run test:extension",
 		"bench": "jiti scripts/bench.ts",
+		"compare": "jiti scripts/compare-models.ts",
 		"training:data": "jiti scripts/build-training-data.ts",
 		"live": "node scripts/live-test.mjs",
 		"release": "jiti scripts/release.ts",
