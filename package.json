@@ -1,6 +1,6 @@
 {
 	"name": "pi-job-listener",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"description": "Give long-running processes back to the agent: hand back a pointer instead of blocking the turn, then wake it when the job actually needs attention.",
 	"type": "module",
 	"license": "MIT",
