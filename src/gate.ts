@@ -85,15 +85,23 @@ export function tailForGate(lines: string[], maxChars = MAX_TAIL_CHARS): string 
 	return out.join("\n");
 }
 
-export async function gateAlive(): Promise<boolean> {
+/** The health endpoint that belongs to a gate URL. */
+export function healthUrlFor(gateUrl: string): string {
+	return gateUrl.replace(/\/v1\/systemone.*$/, "/health");
+}
+
+/** Is anything answering on the gate's health endpoint? */
+export async function isServerUp(gateUrl: string, timeoutMs = 2_000): Promise<boolean> {
 	try {
-		const res = await fetch(GATE_URL.replace(/\/v1\/systemone.*$/, "/health"), {
-			signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-		});
+		const res = await fetch(healthUrlFor(gateUrl), { signal: AbortSignal.timeout(timeoutMs) });
 		return res.ok;
 	} catch {
 		return false;
 	}
+}
+
+export async function gateAlive(): Promise<boolean> {
+	return isServerUp(GATE_URL, REQUEST_TIMEOUT_MS);
 }
 
 export async function askGate(state: string): Promise<GateVerdict | null> {

@@ -22,6 +22,8 @@ import { getAgentDir, getShellConfig } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { GATE_ENABLED, GATE_URL, askGate, estimateTokens, gateAlive, tailForGate } from "./gate.ts";
+import type { RunningServer } from "./laya.ts";
+import { startLayaServer } from "./laya.ts";
 import {
 	type Job,
 	type RegistryEntry,
@@ -48,6 +50,10 @@ const GATE_INTERVAL_MS = Number(process.env.PI_JOB_LISTENER_GATE_INTERVAL_MS ?? 
 const GATE_FAILURE_LIMIT = 3;
 /** Overridable so a test can run against a throwaway directory instead of the real job history. */
 const JOBS_ROOT = process.env.PI_JOB_LISTENER_JOBS_DIR ?? join(getAgentDir(), "jobs");
+/** Command that starts a local decision-model server. Empty means "do not manage one". */
+const LAYA_COMMAND = (process.env.PI_JOB_LISTENER_LAYA_CMD ?? "").trim();
+/** Model weights take seconds to load, so the first gate call of a session can wait. */
+const LAYA_READY_MS = Number(process.env.PI_JOB_LISTENER_LAYA_READY_MS ?? 30_000);
 
 /** Structural view of the bits of ExtensionContext this extension needs. */
 interface Ctx {
@@ -88,6 +94,9 @@ export default function (pi: ExtensionAPI) {
 	let ctxRef: Ctx | undefined;
 	let gateReady = false;
 	let gateFailures = 0;
+	/** The server this session started. A server someone else started is never ours to stop. */
+	let layaServer: RunningServer | undefined;
+	let sessionEnded = false;
 	let ticker: NodeJS.Timeout | undefined;
 	/** Last gate answer per job — what Laya thought, shown on the board even though it acts on nothing. */
 	const gateVerdicts = new Map<string, { choice: string; confidence: number; at: number }>();
@@ -412,24 +421,16 @@ export default function (pi: ExtensionAPI) {
 			// If the directory cannot be created the pointer is useless, but the job still runs.
 		}
 
-		gateReady = GATE_ENABLED && (await gateAlive());
+		gateReady = false;
 		logEvent({
 			event: "session_start",
 			cwd: ctxRef.cwd,
 			gateEnabled: GATE_ENABLED,
-			gateReady,
 			gateUrl: GATE_URL,
 			stallSeconds: DEFAULT_STALL_SECONDS,
 			graceMs: GRACE_MS,
 		});
-		if (ctxRef.hasUI) {
-			ctxRef.ui?.notify(
-				gateReady
-					? `pi-job-listener ready · gate shadow-mode on · logs ${sessionDir}`
-					: `pi-job-listener ready · gate off (${GATE_ENABLED ? "Laya not reachable" : "disabled"}) · logs ${sessionDir}`,
-				gateReady ? "info" : "warning",
-			);
-		}
+		void ensureGate();
 
 		// Work an earlier session left behind: adopt what is still running, and report what
 		// finished while nobody was watching. Without this a job that outlives a session is
@@ -473,8 +474,16 @@ export default function (pi: ExtensionAPI) {
 	pi.on("agent_settled", async (_event, ctx) => refresh(ctx));
 
 	pi.on("session_shutdown", async () => {
+		sessionEnded = true;
 		if (ticker) clearInterval(ticker);
 		ticker = undefined;
+		// The server this session started goes with it. Model weights are large and a stray server
+		// outliving its session is exactly the kind of thing nobody remembers to clean up.
+		if (layaServer) {
+			layaServer.stop();
+			logEvent({ event: "gate_stopped", pid: layaServer.pid });
+			layaServer = undefined;
+		}
 		for (const job of jobs.values()) {
 			if (job.timers.stall) clearTimeout(job.timers.stall);
 			if (job.timers.hardTimeout) clearTimeout(job.timers.hardTimeout);
@@ -511,6 +520,57 @@ export default function (pi: ExtensionAPI) {
 		});
 		renderBoard();
 		flushWakes();
+	}
+
+	/**
+	 * Make the gate ready without holding up the session: an existing server is used as it is, and
+	 * otherwise one is started and watched until it answers. Nothing here blocks session_start — model
+	 * weights take seconds to load, and a person starting a session should not wait for them.
+	 */
+	async function ensureGate(): Promise<void> {
+		const say = (message: string, level: "info" | "warning") => {
+			if (ctxRef?.hasUI) ctxRef.ui?.notify(message, level);
+		};
+
+		if (!GATE_ENABLED) {
+			logEvent({ event: "gate_unavailable", reason: "disabled by configuration" });
+			return;
+		}
+
+		if (await gateAlive()) {
+			gateReady = true;
+			logEvent({ event: "gate_ready", how: "already running" });
+			say("pi-job-listener ready · local model already running", "info");
+			return;
+		}
+
+		if (!LAYA_COMMAND) {
+			logEvent({
+				event: "gate_unavailable",
+				reason: "nothing listening and PI_JOB_LISTENER_LAYA_CMD is unset",
+			});
+			say("pi-job-listener ready · no local model, jobs still supervised", "warning");
+			return;
+		}
+
+		logEvent({ event: "gate_starting", command: LAYA_COMMAND, timeoutMs: LAYA_READY_MS });
+		const started = await startLayaServer({
+			gateUrl: GATE_URL,
+			command: LAYA_COMMAND,
+			readyTimeoutMs: LAYA_READY_MS,
+		});
+
+		if (!started || sessionEnded) {
+			started?.stop();
+			logEvent({ event: "gate_unavailable", reason: "server never became healthy" });
+			say("pi-job-listener ready · local model did not start, jobs still supervised", "warning");
+			return;
+		}
+
+		layaServer = started;
+		gateReady = true;
+		logEvent({ event: "gate_ready", how: "started", pid: started.pid });
+		say("pi-job-listener ready · local model started for this session", "info");
 	}
 
 	// ------------------------------------------------------------- bash tool

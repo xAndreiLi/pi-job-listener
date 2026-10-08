@@ -168,6 +168,32 @@ judgement is not something anyone watching a build needs to know.
 | `PI_JOB_LISTENER_GATE_URL` | `http://127.0.0.1:8000/v1/systemone` | Local Laya server |
 | `PI_JOB_LISTENER_GATE_MODEL` | `english` | Laya checkpoint. `jev-latest` is rejected — use a Laya name |
 | `PI_JOB_LISTENER_GATE_INTERVAL_MS` | `10000` | Minimum gap between gate samples for one job |
+| `PI_JOB_LISTENER_LAYA_CMD` | unset | Command that starts a local model server. Set it and a session starts one and stops it again; leave it unset and an existing server is used, or the gate stays idle. |
+| `PI_JOB_LISTENER_LAYA_READY_MS` | `30000` | How long to wait for a started server to answer `/health` |
+
+## The local model server
+
+Setting `PI_JOB_LISTENER_LAYA_CMD` means nobody has to remember to start a server before working, or to
+stop it afterwards:
+
+```bash
+# macOS / Linux
+export PI_JOB_LISTENER_LAYA_CMD="laya-serve"
+# Windows, with Laya installed in its own venv
+set PI_JOB_LISTENER_LAYA_CMD=C:/Users/you/tools/laya/.venv/Scripts/laya-serve.exe
+```
+
+Three rules keep this boring:
+
+- **Session start never waits for it.** The server is resolved in the background; a session opened to
+  run `ls` should not sit behind model weights loading.
+- **Only the server this session started is stopped.** Anything already listening belongs to somebody
+  else — a different checkpoint, a manual run — and is left alone.
+- **A command that dies is noticed.** If the process exits immediately, the gate reports itself
+  unavailable instead of waiting out the readiness timeout.
+
+A server started here is stopped on session shutdown, along with nothing else: jobs outlive sessions on
+purpose, because killing a twenty-minute build when a session ends is worse than an orphan.
 
 ## Develop
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **The local model server is now managed per session** (`PI_JOB_LISTENER_LAYA_CMD`). If it is set, a
+  session starts the server when it needs one and stops it on shutdown, so nobody has to remember to
+  start it or clean it up. Only a server the session started is ever stopped: anything already
+  listening is left alone, and a command that dies immediately is reported rather than waited out.
+- Session start no longer waits for the gate: the server is resolved in the background, because a
+  session opened to run `ls` should not queue behind model weights loading.
+
 ## 0.1.2 — 2026-10-08
 
 ### Changed

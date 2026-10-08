@@ -13,7 +13,8 @@ import { spawn } from "node:child_process";
 import { closeSync, mkdtempSync, openSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { askGate, estimateTokens, tailForGate } from "../src/gate.ts";
+import { askGate, estimateTokens, isServerUp, tailForGate } from "../src/gate.ts";
+import { startLayaServer } from "../src/laya.ts";
 import {
 	type Job,
 	type RegistryEntry,
@@ -275,6 +276,40 @@ await check("a job outliving its stall threshold reports silence once, not each 
 	await new Promise((resolve) => setTimeout(resolve, 6_000));
 	assert.equal(job.state, "exited", "the fixture should have finished");
 	assert.equal(reports, 1, `expected one stall report, got ${reports}`);
+});
+
+console.log("\nmodel server lifecycle");
+
+await check("a server is started on demand and goes with the session", async () => {
+	const gateUrl = "http://127.0.0.1:8123/v1/systemone";
+	assert.equal(await isServerUp(gateUrl, 500), false, "nothing should be listening before the test");
+	const server = await startLayaServer({
+		gateUrl,
+		command: "node scripts/fake-laya.mjs 8123",
+		readyTimeoutMs: 15_000,
+		pollMs: 300,
+	});
+	try {
+		assert.ok(server, "expected the server to become healthy");
+		assert.ok(server!.pid, "a started server should have a pid");
+		assert.equal(await isServerUp(gateUrl, 1_000), true);
+	} finally {
+		server?.stop();
+	}
+	await new Promise((resolve) => setTimeout(resolve, 1_200));
+	assert.equal(await isServerUp(gateUrl, 800), false, "stop() should take the server down with it");
+});
+
+await check("a command that cannot start is noticed instead of waited out", async () => {
+	const started = Date.now();
+	const server = await startLayaServer({
+		gateUrl: "http://127.0.0.1:8124/v1/systemone",
+		command: "node scripts/fake-job.mjs nope",
+		readyTimeoutMs: 20_000,
+		pollMs: 200,
+	});
+	assert.equal(server, undefined, "a failing command must not produce a server");
+	assert.ok(Date.now() - started < 10_000, `waited ${Date.now() - started} ms for a command that had already died`);
 });
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} check(s) failed`);

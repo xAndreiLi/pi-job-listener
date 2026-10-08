@@ -10,7 +10,7 @@
  */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -90,6 +90,24 @@ async function check(name: string, fn: () => Promise<void>): Promise<void> {
 	}
 }
 
+/** The session directory this run created, found from the throwaway root rather than from UI text. */
+function newestSessionDir(): string {
+	const dirs = readdirSync(jobsRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory());
+	assert.ok(dirs.length > 0, "expected a session directory to have been created");
+	return join(jobsRoot, dirs[dirs.length - 1]!.name);
+}
+
+function readEvents(dir: string): { event: string }[] {
+	try {
+		return readFileSync(join(dir, "events.jsonl"), "utf8")
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line) as { event: string });
+	} catch {
+		return [];
+	}
+}
+
 const factory = (await import("../src/extension.ts")).default as (api: unknown) => void;
 factory(pi);
 
@@ -101,13 +119,27 @@ await check("registers a bash override, a jobs tool and a /jobs command", async 
 	assert.ok((tools.get("bash")!.promptGuidelines ?? []).length >= 2, "expected prompt guidelines");
 });
 
-await check("session_start creates the event log and reports gate status", async () => {
+await check("session_start writes the event log and resolves the gate in the background", async () => {
 	for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
-	const note = notes.join(" | ");
-	assert.match(note, /pi-job-listener ready/);
-	const dir = note.match(/logs (.+?)(?:\s|$)/)?.[1];
-	assert.ok(dir, `expected a log directory in: ${note}`);
-	assert.ok(existsSync(join(dir!, "events.jsonl")), "expected events.jsonl to exist");
+	const dir = newestSessionDir();
+	assert.ok(existsSync(join(dir, "events.jsonl")), "expected events.jsonl to exist");
+	assert.ok(
+		readEvents(dir).some((event) => event.event === "session_start"),
+		"expected a session_start event",
+	);
+
+	// The gate is resolved asynchronously on purpose: a session must not wait on model weights.
+	const deadline = Date.now() + 10_000;
+	let resolved = false;
+	while (Date.now() < deadline) {
+		const kinds = readEvents(dir).map((event) => event.event);
+		if (kinds.includes("gate_ready") || kinds.includes("gate_unavailable")) {
+			resolved = true;
+			break;
+		}
+		await sleep(250);
+	}
+	assert.ok(resolved, "expected the gate to settle shortly after session_start");
 });
 
 await check("a fast command returns its output inline", async () => {
@@ -179,12 +211,8 @@ await check("the board stays clean of internals once the job is done", async () 
 });
 
 await check("shadow gate recorded answers in the event log", async () => {
-	const dir = notes.join(" ").match(/logs (.+?)(?:\s|$)/)?.[1];
-	assert.ok(dir, `expected a log directory in: ${notes.join(" | ")}`);
-	const events = readFileSync(join(dir!, "events.jsonl"), "utf8")
-		.trim()
-		.split("\n")
-		.map((line) => JSON.parse(line));
+	const dir = newestSessionDir();
+	const events = readEvents(dir) as { event: string; shadow?: boolean; choice?: string; stateTokens?: number; expectedTokens?: number; starved?: boolean }[];
 	const kinds = events.map((e) => e.event);
 	assert.ok(kinds.includes("started"), `expected a started event, got ${kinds.join(",")}`);
 	assert.ok(kinds.includes("detached"), "expected a detached event");
