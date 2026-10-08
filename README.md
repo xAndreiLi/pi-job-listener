@@ -24,7 +24,14 @@ command: pytest -q
 intent: run the test suite
 log: ~/.pi/agent/jobs/20261008-073143/job-1.log
 Read the log if you need it. Do not re-run this command.
+Look at job-1 before replying. Nothing else here needs a response.
 ```
+
+That closing line is computed from the outcomes, because a wake is not always a summons. A job that
+exited cleanly is news, not work — the agent should carry on rather than write up a job it already
+knows about. So a clean finish ends with *"No reply needed — nothing here changes what you were doing.
+Do not summarise this wake."*, and a batch containing a failure names the jobs worth looking at and
+says the rest can be ignored.
 
 ## Install
 
@@ -52,6 +59,10 @@ idle and everything else works. See [Configuration](#configuration).
 | job exceeds its `timeout` | killed, then wake |
 | job prints nothing for `stall_seconds` (default 10) | **wake — the job keeps running**; the agent reads the log and kills it via the `jobs` tool if it is stuck |
 | job printed something and is still running | **Laya gate**, shadow mode — logged, not acted on |
+
+Every wake ends with a line saying whether it needs a reply. And a stall for one job is not re-reported
+until the job has been quiet for several times its threshold — otherwise a job that prints more slowly
+than the threshold reports a stall on every pause, which one measured job did six times in two minutes.
 
 Terminal events bypass the gate on purpose: a model that says "wait" on a finished job strands the
 agent. The gate's worst case is a missed optional wake, never an agent asleep on a dead process.

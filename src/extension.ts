@@ -71,7 +71,14 @@ const TICK_MS = 1_000;
 
 export default function (pi: ExtensionAPI) {
 	const jobs = new Map<string, Job>();
-	const pendingWakes: string[] = [];
+	interface WakeItem {
+		id: string;
+		text: string;
+		/** True when the outcome is something the agent has to decide about. */
+		attention: boolean;
+	}
+
+	const pendingWakes: WakeItem[] = [];
 	let counter = 0;
 
 	let sessionDir = "";
@@ -209,6 +216,15 @@ export default function (pi: ExtensionAPI) {
 		].join("\n");
 	}
 
+	/**
+	 * Does this outcome need the agent to decide anything? A clean exit is news, not work: the agent
+	 * should carry on rather than reply with a summary of a job it already knows about.
+	 */
+	function attentionFor(job: Job, reason: string): boolean {
+		if (reason !== "exited") return true;
+		return (job.exitCode ?? 0) !== 0;
+	}
+
 	/** One line per job when a batch is large, so a wake does not fill the transcript. */
 	function compactWake(block: string): string {
 		const lines = block.split("\n");
@@ -217,24 +233,42 @@ export default function (pi: ExtensionAPI) {
 		return log ? `${head} · ${log}` : head;
 	}
 
-	/** One wake per batch, and never mid-turn: queue while the agent is busy. */
+	/**
+	 * One wake per batch, delivered only when the agent is idle. The closing line is computed from the
+	 * outcomes so the agent can tell a notification from a summons: without it, every finished job
+	 * invites a written reply, and a batch of test runs drags a full report out of an idle agent.
+	 */
 	function flushWakes(): void {
 		if (!pendingWakes.length || !ctxRef?.isIdle()) return;
 		const batch = [...pendingWakes];
-		const text =
-			batch.length > 3
-				? [`${batch.length} jobs finished:`, ...batch.map(compactWake)].join("\n")
-				: batch.join("\n\n");
 		pendingWakes.length = 0;
-		logEvent({ event: "wake", jobs: text.match(/\[job-\d+\]/g) ?? [], chars: text.length, batched: batch.length });
-		pi.sendMessage(
-			{ customType: "job-event", content: text, display: true },
-			{ triggerTurn: true },
-		);
+
+		const needsAttention = batch.filter((item) => item.attention);
+		const directive = needsAttention.length
+			? `Look at ${needsAttention.map((item) => item.id).join(", ")} before replying. Nothing else here needs a response.`
+			: "No reply needed — nothing here changes what you were doing. Do not summarise this wake.";
+
+		const text =
+			batch.length === 1
+				? `${batch[0]?.text}\n${directive}`
+				: [
+						`${batch.length} jobs finished · ${needsAttention.length ? `${needsAttention.length} need attention` : "nothing failed"}`,
+						...(batch.length > 3 ? batch.map((item) => compactWake(item.text)) : batch.map((item) => item.text)),
+						directive,
+					].join("\n");
+
+		logEvent({
+			event: "wake",
+			jobs: batch.map((item) => item.id),
+			chars: text.length,
+			batched: batch.length,
+			attention: needsAttention.length,
+		});
+		pi.sendMessage({ customType: "job-event", content: text, display: true }, { triggerTurn: true });
 	}
 
-	function queueWake(text: string): void {
-		pendingWakes.push(text);
+	function queueWake(item: WakeItem): void {
+		pendingWakes.push(item);
 		flushWakes();
 	}
 
@@ -273,7 +307,7 @@ export default function (pi: ExtensionAPI) {
 			logEvent({ event: "inline", job: job.id, reason, exitCode: job.exitCode });
 			return;
 		}
-		queueWake(pointer(job, reason));
+		queueWake({ id: job.id, text: pointer(job, reason), attention: attentionFor(job, reason) });
 	}
 
 	/**
@@ -384,13 +418,15 @@ export default function (pi: ExtensionAPI) {
 			} else {
 				writeRegistry({ ...entry, state: "orphaned" });
 				logEvent({ event: "orphan_ended", job: entry.job, logPath: entry.logPath });
-				queueWake(
-					[
+				queueWake({
+					id: entry.job,
+					attention: true,
+					text: [
 						`[${entry.job}] ended while no session was watching · log: ${entry.logPath}`,
 						`command: ${oneLine(entry.command, 160)}`,
 						"Read the log if you need it. Do not re-run this command.",
 					].join("\n"),
-				);
+				});
 			}
 		}
 	});
@@ -429,15 +465,17 @@ export default function (pi: ExtensionAPI) {
 			stillRunning: true,
 			lines: job.lines,
 		});
-		pendingWakes.push(
-			[
+		pendingWakes.push({
+			id: job.id,
+			attention: true,
+			text: [
 				`[${job.id}] still running · quiet for ${job.stallSeconds}s · ${job.lines} lines`,
 				`command: ${oneLine(job.command, 160)}`,
 				`intent: ${job.intent}`,
 				`log: ${job.logPath}`,
 				"It has not printed anything, which may mean it is thinking or may mean it is stuck on input. Read the log, then kill it with the jobs tool if it is dead.",
 			].join("\n"),
-		);
+		});
 		renderBoard();
 		flushWakes();
 	}

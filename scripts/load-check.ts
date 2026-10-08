@@ -231,12 +231,42 @@ await check("a batch of jobs collapses to one line each in a single wake", async
 	assert.equal(sent.length, before + 1, `expected one batched wake, got ${sent.length - before}`);
 
 	const text = String(sent[before]?.message.content ?? "");
-	assert.match(text, /^4 jobs finished:$/m, `expected a batch header, got: ${text.slice(0, 120)}`);
+	assert.match(text, /^4 jobs finished · 4 need attention$/m, `expected a batch header, got: ${text.slice(0, 140)}`);
 	const rows = text.split("\n").filter((line) => line.startsWith("[job-"));
 	assert.equal(rows.length, 4, `expected four rows, got ${rows.length}`);
 	for (const row of rows) {
 		assert.match(row, /[\\/][^\\/]+\.log$/, `a compact row must still carry its log: ${row}`);
 	}
+	// The directive is the point: a batch of failures has to read as a summons.
+	assert.match(text, /Look at job-\d+(, job-\d+)* before replying\. Nothing else here needs a response\.$/);
+});
+
+await check("a clean batch reads as a notification, not a summons", async () => {
+	const before = sent.length;
+	busy = true;
+	await Promise.all(
+		[0, 1].map((i) =>
+			tools.get("bash")!.execute(
+				`t-clean-${i}`,
+				{ command: "node scripts/fake-job.mjs build", stall_seconds: 60 },
+				undefined,
+				undefined,
+				ctx,
+			),
+		),
+	);
+	await waitWithHeartbeat(11_000, "waiting for two clean jobs");
+	busy = false;
+	for (const handler of handlers.get("agent_settled") ?? []) await handler({}, ctx);
+	assert.equal(sent.length, before + 1, `expected one wake, got ${sent.length - before}`);
+
+	const text = String(sent[before]?.message.content ?? "");
+	assert.match(text, /^2 jobs finished · nothing failed$/m, `expected the no-failure header, got: ${text.slice(0, 140)}`);
+	assert.match(
+		text,
+		/No reply needed — nothing here changes what you were doing\. Do not summarise this wake\.$/,
+		"a clean batch must tell the agent it needs no response",
+	);
 });
 
 console.log(failures === 0 ? "\nload check passed" : `\n${failures} check(s) failed`);
