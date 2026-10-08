@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.1 — 2026-10-08
+
+Same source as 0.1.0. This release exists to prove the trusted-publishing path: the first version
+published by CI over OIDC rather than by a token, with an attestation to match.
+
+### Changed
+
+- The README opens with what the package is for — an agent that blocks a turn on a long timeout does
+  not discover a failure at the second it happens, it discovers it when the timeout expires.
+- Install instructions: `pi install npm:pi-job-listener`, and the optional Laya server for the gate.
+
 ## 0.1.0 — 2026-10-08
 
 First release. A supervisor for long-running processes: the `bash` tool hands back a pointer instead

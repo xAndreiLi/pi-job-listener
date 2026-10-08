@@ -1,13 +1,46 @@
 # pi-job-listener
 
-Stops the agent waiting on long-running processes.
+**Your agent stops waiting for things that are already dead.**
 
-It replaces the `bash` tool. A command that finishes quickly behaves exactly as before. A command
-still running after a short grace period hands the agent a **pointer** instead of blocking the turn —
-the agent goes idle, and is woken when the job actually needs attention.
+When an agent runs a slow command, it does the intuitive thing: it waits. So it sets a generous timeout
+— 300 seconds, 600 seconds — and blocks the whole turn on it. If the build fails at second three, that
+is not discovered at second three. It is discovered at second three hundred, when the timeout finally
+expires and the shell hands back a wall of output with the failure buried at the bottom. The agent sat
+there for five minutes watching a process that had already given up.
 
-The wake message is never a summary. It is a job id, a state, an exit code, a line count and a log
-path. The agent reads the log itself.
+`pi-job-listener` replaces the `bash` tool so that does not happen.
+
+- A command that finishes quickly behaves exactly as it does today.
+- A command still running after ~5 seconds hands the agent a **pointer** — job id, state, log path — and
+  the agent moves on instead of blocking.
+- The agent is **woken the moment the job needs it**: it exited, it failed, it hit its timeout, or it
+  has gone quiet without printing anything. A doomed process is noticed in seconds, not at the timeout.
+
+The wake message is never a summary. It is a pointer, and the agent reads the log itself.
+
+```
+[job-1] exited with code 1 after 7s · 5 lines
+command: pytest -q
+intent: run the test suite
+log: ~/.pi/agent/jobs/20261008-073143/job-1.log
+Read the log if you need it. Do not re-run this command.
+```
+
+## Install
+
+```bash
+pi install npm:pi-job-listener
+```
+
+Or from a checkout, which loads live from the working tree:
+
+```bash
+pi install ./pi-job-listener
+```
+
+Optional: a local [Laya](https://huggingface.co/convaiinnovations/laya) server enables the gate, which
+reads ambiguous output and decides whether it is worth waking the agent for. Without it the gate stays
+idle and everything else works. See [Configuration](#configuration).
 
 ## Wake policy
 
