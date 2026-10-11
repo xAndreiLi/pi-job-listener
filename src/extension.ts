@@ -31,6 +31,7 @@ import {
 	adoptJob,
 	appendEvent,
 	configureShell,
+	jobLabel,
 	jobsSummary,
 	killJob,
 	markDetached,
@@ -39,6 +40,7 @@ import {
 	recentTail,
 	registryKey,
 	startJob,
+	stripLeadingCd,
 	waitForGrace,
 } from "./jobs.ts";
 
@@ -118,11 +120,16 @@ export default function (pi: ExtensionAPI) {
 	function oneLine(command: string, max = 34): string {
 		// Newlines become separators rather than spaces: flattening `cd x\nnpm test` to
 		// `cd x npm test` invents a command that was never run.
-		const flat = command
+		const flat = stripLeadingCd(command)
 			.replace(/\s*\n\s*/g, " ; ")
 			.replace(/[ \t]+/g, " ")
 			.trim();
 		return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+	}
+
+	/** `job-7 · dev server` when the agent named it, else the bare id — the id stays greppable. */
+	function titled(job: { id: string; name?: string }): string {
+		return job.name ? `${job.id} · ${job.name}` : job.id;
 	}
 
 	function secondsSince(from: number, to = Date.now()): number {
@@ -162,7 +169,7 @@ export default function (pi: ExtensionAPI) {
 		// Flag a job the watcher is concerned about *while it is still running*: a finished job's exit
 		// code already says everything, and a flag there would be noise on top of the news.
 		const flagged = running && gateVerdicts.get(job.id)?.choice === "wake";
-		const head = `${icon} ${job.id.padEnd(6)} ${oneLine(job.command, 32).padEnd(32)} ${state.padEnd(16)} ${String(job.lines).padStart(5)} ln${flagged ? "   \u26a0 needs a look" : ""}`;
+		const head = `${icon} ${job.id.padEnd(6)} ${oneLine(jobLabel(job), 32).padEnd(32)} ${state.padEnd(16)} ${String(job.lines).padStart(5)} ln${flagged ? "   \u26a0 needs a look" : ""}`;
 		const last = lastOutputLine(job);
 		return last ? [head, `         \u21b3 ${last}`] : [head];
 	}
@@ -187,7 +194,7 @@ export default function (pi: ExtensionAPI) {
 				const oldest = running.reduce((a, b) => (a.startedAt <= b.startedAt ? a : b));
 				ui.setStatus(
 					STATUS_KEY,
-					`\u2699 ${running.length} job${running.length > 1 ? "s" : ""} \u00b7 ${oneLine(oldest.command, 24)} \u00b7 ${secondsSince(oldest.startedAt)}s`,
+					`\u2699 ${running.length} job${running.length > 1 ? "s" : ""} \u00b7 ${oneLine(jobLabel(oldest), 24)} \u00b7 ${secondsSince(oldest.startedAt)}s`,
 				);
 			}
 		}
@@ -246,7 +253,7 @@ export default function (pi: ExtensionAPI) {
 		if (job.adopted) {
 			const state = reason === "stalled" ? `quiet for ${job.stallSeconds}s` : "ended";
 			return [
-				`[${job.id}] ${state} after ${seconds}s · started by a previous session, so the exit code is unknown${killWarning(job)}`,
+				`[${titled(job)}] ${state} after ${seconds}s · started by a previous session, so the exit code is unknown${killWarning(job)}`,
 				`command: ${oneLine(job.command, 160)}`,
 				`intent: ${job.intent}`,
 				`log: ${job.logPath}`,
@@ -260,8 +267,8 @@ export default function (pi: ExtensionAPI) {
 					? `quiet for ${job.stallSeconds}s`
 					: reason;
 		return [
-			`[${job.id}] ${state} after ${seconds}s · ${job.lines} lines${killWarning(job)}`,
-			`command: ${job.command.replace(/\s+/g, " ").slice(0, 160)}`,
+			`[${titled(job)}] ${state} after ${seconds}s · ${job.lines} lines${killWarning(job)}`,
+			`command: ${oneLine(job.command, 160)}`,
 			`intent: ${job.intent}`,
 			`log: ${job.logPath}`,
 			"Read the log if you need it. Do not re-run this command.",
@@ -368,6 +375,7 @@ export default function (pi: ExtensionAPI) {
 				job: original ?? job.id,
 				pid: job.pid,
 				command: job.command,
+				name: job.name,
 				intent: job.intent,
 				logPath: job.logPath,
 				startedAt: job.startedAt,
@@ -490,7 +498,7 @@ export default function (pi: ExtensionAPI) {
 					id: entry.job,
 					attention: true,
 					text: [
-						`[${entry.job}] ended while no session was watching · log: ${entry.logPath}`,
+						`[${entry.name ? `${entry.job} · ${entry.name}` : entry.job}] ended while no session was watching · log: ${entry.logPath}`,
 						`command: ${oneLine(entry.command, 160)}`,
 						"Read the log if you need it. Do not re-run this command.",
 					].join("\n"),
@@ -545,7 +553,7 @@ export default function (pi: ExtensionAPI) {
 			id: job.id,
 			attention: true,
 			text: [
-				`[${job.id}] still running · quiet for ${job.stallSeconds}s · ${job.lines} lines`,
+				`[${titled(job)}] still running · quiet for ${job.stallSeconds}s · ${job.lines} lines`,
 				`command: ${oneLine(job.command, 160)}`,
 				`intent: ${job.intent}`,
 				`log: ${job.logPath}`,
@@ -618,6 +626,12 @@ export default function (pi: ExtensionAPI) {
 			"you are woken when it exits, fails, times out, or prints nothing for stall_seconds. Output is truncated to the last 2000 lines.",
 		parameters: Type.Object({
 			command: Type.String({ description: "Shell command to execute" }),
+			name: Type.Optional(
+				Type.String({
+					description:
+						"Short name for this job, e.g. \"dev server\" or \"web build\". Shown on the board and in the wake instead of the command. Name anything expected to outlive the grace window.",
+				}),
+			),
 			timeout: Type.Optional(
 				Type.Number({
 					description:
@@ -635,6 +649,7 @@ export default function (pi: ExtensionAPI) {
 			"Long commands return a job id instead of output: the process keeps running and you are woken when it needs you. Do not re-run a command that returned a job id.",
 			"Never use sleep to wait for something. Start the process and wait for the wake message.",
 			"Raise stall_seconds for a command that is expected to be quiet for a while; lower it when you need to hear about a hang quickly.",
+			"Give a long-running command a `name` (e.g. `name: \"dev server\"`): the board and every wake then say what the job is instead of showing the command text.",
 			"A wake that names jobs still running means your picture is incomplete: wait for them, or cancel them with the jobs tool, before writing up results. A wake that says no reply is needed is a notification — carry on without summarising it.",
 		],
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -645,6 +660,7 @@ export default function (pi: ExtensionAPI) {
 			const job = startJob({
 				id,
 				command: params.command,
+				name: params.name,
 				cwd: (ctx as unknown as Ctx).cwd,
 				logPath,
 				stallSeconds,
@@ -660,6 +676,7 @@ export default function (pi: ExtensionAPI) {
 				event: "started",
 				job: id,
 				command: params.command,
+				name: job.name ?? null,
 				intent: job.intent,
 				cwd: job.cwd,
 				pid: job.pid,
@@ -671,6 +688,7 @@ export default function (pi: ExtensionAPI) {
 				job: id,
 				pid: job.pid,
 				command: job.command,
+				name: job.name,
 				intent: job.intent,
 				logPath: job.logPath,
 				startedAt: job.startedAt,
@@ -727,7 +745,7 @@ export default function (pi: ExtensionAPI) {
 					{
 						type: "text" as const,
 						text: [
-							`\u25b6 ${id} running (pid ${job.pid}) \u00b7 log: ${logPath}`,
+							`\u25b6 ${titled(job)} running (pid ${job.pid}) \u00b7 log: ${logPath}`,
 							`You will be woken when it exits, fails, times out, or goes quiet for ${stallSeconds}s. Do not re-run it.`,
 						].join("\n"),
 					},

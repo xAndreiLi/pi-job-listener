@@ -56,6 +56,8 @@ export interface KillOutcome {
 export interface Job {
 	id: string;
 	command: string;
+	/** What the agent called this job, when it gave one. The board label, and the name in a wake. */
+	name?: string;
 	/** One line of why this was run — a trailing `# intent: ...` comment, else the command. */
 	intent: string;
 	cwd: string;
@@ -123,6 +125,21 @@ export function parseIntent(command: string): string {
 }
 
 /**
+ * A leading `cd <dir> &&` is the session's working directory restated, and on a one-line board it is
+ * the whole row: what the job is gets truncated away behind a path nobody asked to see. Drop it,
+ * unless it is the entire command — then the cd is the only thing left to show.
+ */
+export function stripLeadingCd(command: string): string {
+	const stripped = command.replace(/^\s*cd\s+(?:"[^"]*"|'[^']*'|[^\s&|;]+)\s*(?:&&|;|\|\||\n)\s*/i, "");
+	return stripped.trim() ? stripped : command;
+}
+
+/** What a job is called: the agent's name for it, else its intent line with any leading cd dropped. */
+export function jobLabel(job: Job): string {
+	return job.name ?? parseIntent(stripLeadingCd(job.command));
+}
+
+/**
  * Append one JSONL event. Synchronous on purpose: this log is the training set, and a reader
  * (or the NEXT event) must never observe a half-written line or a missing file.
  */
@@ -137,6 +154,7 @@ export function appendEvent(eventsPath: string, event: Record<string, unknown>):
 export interface StartOptions {
 	id: string;
 	command: string;
+	name?: string;
 	cwd: string;
 	logPath: string;
 	stallSeconds: number;
@@ -150,7 +168,8 @@ export function startJob(options: StartOptions): Job {
 	const job: Job = {
 		id: options.id,
 		command: options.command,
-		intent: parseIntent(options.command),
+		name: options.name,
+		intent: parseIntent(stripLeadingCd(options.command)),
 		cwd: options.cwd,
 		logPath: options.logPath,
 		pid: undefined,
@@ -375,7 +394,7 @@ export function jobsSummary(job: Job): string {
 	const seconds = Math.round(((job.endedAt ?? Date.now()) - job.startedAt) / 1000);
 	const state = job.state === "exited" ? `exited (${job.exitCode})` : job.state;
 	const kill = job.kill?.verdict && job.kill.verdict !== "confirmed" ? ` · kill ${job.kill.verdict}` : "";
-	return `${job.id} · ${state} · ${seconds}s · ${job.lines} lines · ${job.command.replace(/\s+/g, " ").slice(0, 80)}${kill}`;
+	return `${job.id} · ${state} · ${seconds}s · ${job.lines} lines · ${jobLabel(job).replace(/\s+/g, " ").slice(0, 80)}${kill}`;
 }
 
 /**
@@ -463,6 +482,7 @@ export interface RegistryEntry {
 	job: string;
 	pid: number | undefined;
 	command: string;
+	name?: string;
 	intent: string;
 	logPath: string;
 	startedAt: number;
@@ -544,6 +564,7 @@ export function adoptJob(options: AdoptOptions): { job: Job; stop: () => void } 
 	const job: Job = {
 		id: entry.job,
 		command: entry.command,
+		name: entry.name,
 		intent: entry.intent,
 		cwd: "",
 		logPath: entry.logPath,

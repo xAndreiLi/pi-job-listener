@@ -19,7 +19,7 @@ there for five minutes watching a process that had already given up.
 The wake message is never a summary. It is a pointer, and the agent reads the log itself.
 
 ```
-[job-1] exited with code 1 after 7s · 5 lines
+[job-1 · test suite] exited with code 1 after 7s · 5 lines
 command: pytest -q
 intent: run the test suite
 log: ~/.pi/agent/jobs/20261008-073143/job-1.log
@@ -108,7 +108,9 @@ Fine-tuning is `laya-train` from that JSONL once a few hundred rows exist.
 
 ## Tools
 
-- `bash` — supervised shell. Extra parameters: `stall_seconds`, `timeout`.
+- `bash` — supervised shell. Extra parameters: `stall_seconds`, `timeout`, `name`.
+  `name` is what the job is called on the board and in its wakes (`name: "dev server"`); without it
+  the label falls back to the `# intent:` comment, else the command.
 - `jobs` — `list` / `status` / `tail` / `kill`.
 - `/jobs` — the same list in the transcript.
 
@@ -148,10 +150,15 @@ While anything is running, the extension draws a small board above the editor an
 
 ```
 jobs · 1 running
-▶ job-2  pnpm build --filter web        14s          63 ln
+▶ job-2  web build                       14s          63 ln
            ↳ transforming (128) src/components/Chart.tsx
 ```
 
+- **A job is called what the agent called it.** Pass `name` to the bash tool and that is the row, the
+  status line and the head of every wake (`[job-1 · test suite] exited with code 1 …`). The job number
+  stays in front of it, because that is what the `jobs` tool takes. Without a name, the label is the
+  `# intent:` comment, else the command — minus a leading `cd <dir> &&`, which only restates the
+  session's working directory and used to fill the row on its own.
 - `▶` running, with elapsed time ticking once a second and switching to `quiet 14s` when the job has
   gone silent for longer than its stall threshold — the same condition that produces a stall wake.
 - **The newest line each job printed**, so the board says what a job is doing without opening its log.

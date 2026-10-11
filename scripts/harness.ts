@@ -21,6 +21,7 @@ import {
 	type TerminalReport,
 	adoptJob,
 	appendEvent,
+	jobLabel,
 	jobsSummary,
 	killJob,
 	killProcessTree,
@@ -29,6 +30,7 @@ import {
 	recentTail,
 	readRegistry,
 	startJob,
+	stripLeadingCd,
 	waitForGrace,
 } from "../src/jobs.ts";
 
@@ -216,6 +218,25 @@ await check("a kill that could not be checked is never reported as confirmed", a
 	assert.equal(report.reason, "timeout");
 	assert.equal(job.totalChars, 0, "expected nothing to reach the job's own log");
 	assert.equal(job.kill?.verdict, CLEAN_KILL, `expected ${CLEAN_KILL}, got ${job.kill?.verdict}`);
+});
+
+await check("a leading cd is dropped unless it is the whole command", async () => {
+	assert.equal(stripLeadingCd("cd /c/Users/tonio/project && npm run dev"), "npm run dev");
+	assert.equal(stripLeadingCd('cd "C:/Program Files/x" && npm test'), "npm test");
+	assert.equal(stripLeadingCd("cd sub\nnpm test"), "npm test", "a newline separates too");
+	assert.equal(stripLeadingCd("cd .."), "cd ..", "nothing left but the cd — keep it");
+	assert.equal(stripLeadingCd("npm test"), "npm test");
+});
+
+await check("a job is labelled by what it does, and by its name when the agent gave one", async () => {
+	// The cd is the session's own working directory restated, so a one-line label starting with it
+	// says nothing and pushes the part that matters off the row.
+	const { job, terminal } = run(`cd "${process.cwd()}" && ${FIXTURE} fail`);
+	assert.equal(jobLabel(job), `${FIXTURE} fail`, `expected the command without its cd, got ${jobLabel(job)}`);
+	job.name = "web tests";
+	assert.equal(jobLabel(job), "web tests", "an agent-given name wins over the command");
+	assert.match(jobsSummary(job), /web tests/, "the jobs tool must show the same label");
+	await terminal;
 });
 
 console.log("\ngate");
