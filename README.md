@@ -56,13 +56,23 @@ idle and everything else works. See [Configuration](#configuration).
 | command finishes inside the grace window (~5 s) | output returned inline, nothing to wake for |
 | job exits | wake, always |
 | job exits non-zero | wake, always |
-| job exceeds its `timeout` | killed, then wake |
+| job exceeds its `timeout` | killed, then wake — the wake says whether the kill was confirmed |
 | job prints nothing for `stall_seconds` (default 10) | **wake — the job keeps running**; the agent reads the log and kills it via the `jobs` tool if it is stuck |
 | job printed something and is still running | **Laya gate**, shadow mode — logged, not acted on |
 
 Every wake ends with a line saying whether it needs a reply. And a stall for one job is not re-reported
 until the job has been quiet for several times its threshold — otherwise a job that prints more slowly
 than the threshold reports a stall on every pause, which one measured job did six times in two minutes.
+
+A timeout kill is verified, not assumed: the kill is attempted, waited out, retried once, and the wake
+says what the check could see. `KILL UNCONFIRMED` means something is provably still alive — the shell
+itself, or a process still holding the job's output, which is how an orphaned dev server kept writing
+to its log after being reported as finished. `KILL UNVERIFIED` means nothing visible survived, but the
+whole tree could not be seen, so a child that re-parented past the shell would leave no trace. On
+Windows that is the honest answer for every timeout kill: `taskkill /T` walks recorded parent pids, and
+a launcher that exits (`bash` re-execs, `npm.cmd`'s `cmd.exe`) leaves its children unreachable to that
+walk. **If a port still answers after `KILL UNVERIFIED`, that answer is the orphan** — kill it by pid
+rather than reading it as proof the job is healthy.
 
 Terminal events bypass the gate on purpose: a model that says "wait" on a finished job strands the
 agent. The gate's worst case is a missed optional wake, never an agent asleep on a dead process.
@@ -261,6 +271,12 @@ event now, which removed more than half of it; the rest is spawning a shell and 
   of problem the job registry solves for jobs, and not solved here. `session_shutdown` firing on a live
   path has also not been verified end to end, only its two halves separately.
 - Output is not streamed to the transcript while a job runs detached; it goes to the log only.
+- **A Windows kill cannot be verified.** `taskkill /T` walks recorded parent pids, so a launcher that
+  exits can leave its children unreachable, and neither the walk nor its exit code reports what it
+  missed — the wake says `KILL UNVERIFIED` rather than claiming the tree is gone. A job object
+  (`CreateJobObject` + `AssignProcessToJobObject` with kill-on-close) is the one mechanism that both
+  contains the tree and can be asked what is left in it; the extension does not use one yet, and the
+  check above is what is available without it.
 - `bash` is overridden for every session the extension is loaded in.
 - Every command writes a log file, inline ones included, and nothing prunes them: a long session leaves
   a directory of tiny files under `~/.pi/agent/jobs/`. The in-memory job map is kept for the whole
@@ -271,4 +287,4 @@ event now, which removed more than half of it; the rest is spawning a shell and 
 
 - 2026-10-08: a real pi session (RPC mode) detached a job at the grace window, then started a new
   turn on its own 11.8 s in, carrying the pointer and nothing else.
-- 21 self-checks across `harness.ts` and `load-check.ts`.
+- 29 self-checks across `harness.ts` and `load-check.ts`.

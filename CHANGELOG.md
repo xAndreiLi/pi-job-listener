@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.1.6 — 2026-10-11
+
+### Fixed
+
+- **A timeout kill now says whether the process tree actually died.** `killJob` returned `true`
+  whenever its guard passed, because `killProcessTree` threw taskkill's exit code and stderr away and
+  returned early on Windows: a kill that did nothing was indistinguishable from one that worked, and
+  the job was marked `timeout` either way. The kill is now attempted, waited out and escalated once
+  (a second `taskkill` plus a direct signal to the pid), then given a verdict — `confirmed`,
+  `unconfirmed` (the shell, or a process still holding the job's output, is provably alive), or
+  `unverified` (nothing visible survived, but the platform could not see the whole tree). The verdict
+  travels in the wake, in the `jobs` tool's answer and in `jobs list`, and the event log keeps
+  taskkill's own diagnostics so a later reader can tell what it killed.
+- Nothing is reported as `confirmed` on Windows. `taskkill /T` walks recorded parent pids, and both
+  reported orphans had been re-parented away from the shell before the kill (`bash` re-execs,
+  `npm.cmd`'s `cmd.exe` exits) — a link the walk cannot cross and does not report missing. A survivor
+  that inherited the job's output does stay visible, because it holds the stdout pipe open, and is now
+  reported as `unconfirmed` instead of passing as a clean timeout. The wake names the pids it knows.
+
+### Added
+
+- `fake-job.mjs escape` — a launcher that exits and leaves a detached grandchild holding the job's
+  stdout, which is the shape of both incidents in the handoff. Two self-checks come with it: that
+  timeout never reports a clean kill, and that a job whose output was redirected away (where the
+  orphan is invisible) is never reported as confirmed either.
+
 ## 0.1.5 — 2026-10-08
 
 ### Fixed
