@@ -6,8 +6,8 @@ dist/
 # job history is runtime state, not source
 .jobs/
 
-# local secrets
-.env
+# shortcut: `.env*` also hides a checked-in sample; force-add one with `git add -f`
+.env*
 
 # test artefacts
 scripts/live-test-records.jsonl
