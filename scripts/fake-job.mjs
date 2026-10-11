@@ -8,6 +8,7 @@
  *   node scripts/fake-job.mjs fail    -> quiet, then a failure, exits 1
  *   node scripts/fake-job.mjs quiet   -> silent for 30 s (stall detector should fire)
  *   node scripts/fake-job.mjs hang    -> waiting on input forever
+ *   node scripts/fake-job.mjs escape  -> exits at once, leaving a silent grandchild holding stdout
  */
 
 const mode = process.argv[2] ?? "build";
@@ -64,6 +65,19 @@ if (mode === "tick") {
 		console.log(`tick ${i}`);
 		await sleep(every);
 	}
+	process.exit(0);
+}
+
+if (mode === "escape") {
+	// A launcher that exits and leaves the workload behind, still holding the job's stdout — the shape
+	// of `bash -> npm.cmd -> cmd -> next dev`. The child is detached so that it survives its
+	// launcher on both platforms, and on Windows that also puts it beyond `taskkill /T`: the walk
+	// runs on recorded parent pids, and this child's parent is already gone. That is how both
+	// reported orphans outlived their own timeout.
+	const { spawn } = await import("node:child_process");
+	const child = spawn(process.execPath, [process.argv[1], "quiet"], { stdio: "inherit", detached: true });
+	console.log(`escape pid=${child.pid}`);
+	child.unref();
 	process.exit(0);
 }
 

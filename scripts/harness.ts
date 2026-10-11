@@ -9,7 +9,7 @@
  */
 
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { closeSync, mkdtempSync, openSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +23,7 @@ import {
 	appendEvent,
 	jobsSummary,
 	killJob,
+	killProcessTree,
 	markDetached,
 	pidAlive,
 	recentTail,
@@ -34,6 +35,24 @@ import {
 const dir = mkdtempSync(join(tmpdir(), "pjl-harness-"));
 const FIXTURE = "node scripts/fake-job.mjs";
 let failures = 0;
+
+/**
+ * The best a kill can end up as here. POSIX signals the child's whole process group; on Windows the
+ * kill cannot be verified at all, because taskkill walks recorded parent pids and a child that
+ * re-parented past the shell is invisible to that walk.
+ */
+const CLEAN_KILL = process.platform === "win32" ? "unverified" : "confirmed";
+
+function killByPid(pid: number): void {
+	if (process.platform === "win32") spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { encoding: "utf8" });
+	else {
+		try {
+			process.kill(pid, "SIGKILL");
+		} catch {
+			// Already gone.
+		}
+	}
+}
 
 function run(
 	command: string,
@@ -112,7 +131,8 @@ await check("silence is reported and the job is left running", async () => {
 	assert.equal(reported.id, job.id, "the stall should name the job it is about");
 	assert.equal(job.state, "running", "a stall must not kill the job");
 	// The agent is the one who decides, through the jobs tool.
-	assert.equal(killJob(job), true, "a stalled job should still be killable");
+	const outcome = await killJob(job);
+	assert.equal(outcome.verdict, CLEAN_KILL, `a stalled job should still be killable: ${outcome.detail}`);
 });
 
 await check("the silence timer restarts when the job is handed back", async () => {
@@ -122,7 +142,7 @@ await check("the silence timer restarts when the job is handed back", async () =
 	markDetached(job, () => {});
 	assert.equal(job.detached, true);
 	assert.ok(job.lastOutputAt > before, "handing the job back must restart the silence clock");
-	killJob(job);
+	await killJob(job);
 });
 
 await check("a timeout kills the job and reports the timeout", async () => {
@@ -142,7 +162,8 @@ await check("killing a job stops its whole process tree", async () => {
 	await waitForGrace(job, 500);
 	const pid = job.pid;
 	assert.ok(pid, "expected a pid");
-	assert.equal(killJob(job), true);
+	const outcome = await killJob(job);
+	assert.equal(outcome.verdict, CLEAN_KILL, `expected a clean kill: ${outcome.detail}`);
 	const report = await terminal;
 	assert.ok(["killed", "exited"].includes(report.reason), `unexpected reason ${report.reason}`);
 	await new Promise((resolve) => setTimeout(resolve, 500));
@@ -154,6 +175,47 @@ await check("killing a job stops its whole process tree", async () => {
 	}
 	assert.equal(alive, false, `pid ${pid} survived the tree kill`);
 	assert.match(jobsSummary(job), /^t-/);
+});
+
+await check("a kill that did nothing reports what the platform said", async () => {
+	const report = killProcessTree(999_999);
+	assert.equal(report.ok, false, "a pid that does not exist is not a successful kill");
+	assert.ok(report.detail.length > 0, "expected the exit code or the signal error in the detail");
+});
+
+await check("a timeout that leaves a grandchild alive says so instead of claiming a clean kill", async () => {
+	const { job, terminal } = run(`${FIXTURE} escape`, { graceMs: 500, stallSeconds: 60, timeoutSeconds: 1 });
+	await waitForGrace(job, 500);
+	const report = await terminal;
+	assert.equal(report.reason, "timeout");
+	assert.equal(job.state, "timeout");
+	const escaped = Number(/escape pid=(\d+)/.exec(recentTail(job))?.[1]);
+	assert.ok(escaped > 0, `expected the launcher to name the grandchild in the log, tail: ${recentTail(job)}`);
+	// The orphan is real on both platforms: its launcher is gone, so nothing points at it any more,
+	// and it still holds the job's stdout. Before this verdict existed the job was simply "timeout",
+	// which is the sentence that let an orphaned dev server be reported as healthy.
+	assert.equal(pidAlive(escaped), true, "expected the grandchild to outlive its launcher");
+	assert.equal(job.kill?.verdict, "unconfirmed", `expected an unconfirmed kill, got ${job.kill?.verdict}`);
+	assert.match(jobsSummary(job), /kill unconfirmed/, "the summary must carry the verdict too");
+	killByPid(escaped);
+	await new Promise((resolve) => setTimeout(resolve, 300));
+	assert.equal(pidAlive(escaped), false, "the test must not leave the orphan behind");
+});
+
+await check("a kill that could not be checked is never reported as confirmed", async () => {
+	// Output redirected away from the listener: there is no pipe to be held, so a child that
+	// re-parented past the shell would leave no trace at all. On Windows the honest answer is that
+	// the kill could not be verified — saying nothing would imply the tree is gone.
+	const { job, terminal } = run(`node scripts/fake-job.mjs quiet > ${join(dir, "redirected.log")} 2>&1`, {
+		graceMs: 500,
+		stallSeconds: 60,
+		timeoutSeconds: 1,
+	});
+	await waitForGrace(job, 500);
+	const report = await terminal;
+	assert.equal(report.reason, "timeout");
+	assert.equal(job.totalChars, 0, "expected nothing to reach the job's own log");
+	assert.equal(job.kill?.verdict, CLEAN_KILL, `expected ${CLEAN_KILL}, got ${job.kill?.verdict}`);
 });
 
 console.log("\ngate");
