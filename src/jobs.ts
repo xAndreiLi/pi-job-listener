@@ -40,6 +40,19 @@ export function configureShell(resolver: () => ShellSpec): void {
 
 export type JobState = "running" | "exited" | "timeout" | "stalled" | "killed";
 
+/** Whether a tree kill actually took the tree down — see killJob. */
+export type KillVerdict = "confirmed" | "unconfirmed" | "unverified";
+
+export interface KillOutcome {
+	/** False when the job was not running, so nothing was attempted. */
+	attempted: boolean;
+	verdict?: KillVerdict;
+	/** What the platform reported: taskkill's exit code and stderr, or the escalation's result. */
+	detail: string;
+	/** Pids known to be alive when the verdict was decided. */
+	survivors: number[];
+}
+
 export interface Job {
 	id: string;
 	command: string;
@@ -75,6 +88,14 @@ export interface Job {
 	settle?: () => void;
 	pending: string;
 	timers: { stall?: NodeJS.Timeout; hardTimeout?: NodeJS.Timeout };
+	/**
+	 * Set when the child's stdout/stderr pipes close. 'close' waits for the pipes as well as the
+	 * process, so a survivor that inherited the job's stdout holds this back — which is what makes
+	 * "is the pipe still open?" the one signal left on Windows.
+	 */
+	stdioClosed?: boolean;
+	/** Verdict of the last tree kill, when one was attempted. */
+	kill?: KillOutcome;
 }
 
 export interface TerminalReport {
@@ -153,7 +174,8 @@ export function startJob(options: StartOptions): Job {
 
 	let settled = false;
 	let flushed = false;
-	const finish = (reason: TerminalReport["reason"], exitCode: number | null) => {
+	/** Set while a kill is in flight so the close handler reports a timeout rather than a plain exit. */
+	let killReason: TerminalReport["reason"] | undefined;	const finish = (reason: TerminalReport["reason"], exitCode: number | null) => {
 		if (settled) return;
 		settled = true;
 		clearTimers(job);
@@ -204,13 +226,20 @@ export function startJob(options: StartOptions): Job {
 	child.stderr?.on("data", onData);
 
 	child.on("error", () => finish("killed", null));
-	child.on("close", (code) => finish("exited", code));
+	child.on("close", (code) => {
+		job.stdioClosed = true;
+		// A kill in flight owns the terminal report: its verdict is part of the outcome, and the wake
+		// must not describe the job before the verdict exists. The kill path reports it instead.
+		if (!killReason) finish("exited", code);
+	});
 
 	resetStallTimer(job, options.onStall);
 	if (job.timeoutMs) {
 		job.timers.hardTimeout = setTimeout(() => {
-			killJob(job);
-			finish("timeout", null);
+			// The terminal state waits for the kill to be verified: a timeout that left the tree alive
+			// is a different fact from one that took it down, and the wake has to say which it was.
+			killReason = "timeout";
+			void killJob(job).then(() => finish("timeout", null));
 		}, Math.max(0, job.timeoutMs - Date.now()));
 	}
 
@@ -237,37 +266,103 @@ export function waitForGrace(job: Job, graceMs: number): Promise<boolean> {
 	});
 }
 
-export function killJob(job: Job): boolean {
-	if (job.state !== "running" || !job.pid) return false;
-	try {
-		killProcessTree(job.pid);
-		return true;
-	} catch {
-		return false;
-	}
-}
+/** How long a process that has just been killed may take to leave the process table. */
+const KILL_GRACE_MS = 400;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Kill a process and everything it spawned.
- * Windows needs taskkill /T or grandchildren survive; on POSIX the child is detached
- * (its own process group), so signalling the group is enough.
+ * Kill a job's process tree, then say whether it actually died.
+ *
+ * The verdict is drawn from what this platform can observe, never assumed:
+ *
+ *   confirmed   — nothing is left that could have inherited the job's output, and the platform's
+ *                 mechanism covers the whole tree (POSIX signals the child's process group).
+ *   unconfirmed — something is provably alive: the shell itself, or a process still holding the
+ *                 job's output (which is how both reported orphans kept writing to their log).
+ *   unverified  — nothing visible survived, but this platform cannot see the whole tree, so a
+ *                 survivor that re-parented past the shell would leave no trace here.
+ *
+ * That last case is Windows, and it is why this returns a verdict rather than a boolean. Windows
+ * has one mechanism — taskkill /T, which walks recorded parent pids — and no fallback, while both
+ * reported orphans had been re-parented away from the shell before the kill (`bash` re-execs,
+ * npm.cmd's `cmd.exe` exits). taskkill cannot walk a broken link, and does not report that it
+ * could not: it exits 0, having killed everything it was able to see. So on Windows the honest
+ * answer is that the tree could not be verified, and the wake has to say so rather than imply a
+ * clean kill.
  */
-export function killProcessTree(pid: number): void {
-	if (process.platform === "win32") {
-		spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
-			stdio: "ignore",
-			windowsHide: true,
-		});
-		return;
+export async function killJob(job: Job): Promise<KillOutcome> {
+	if (job.state !== "running" || !job.pid) {
+		return { attempted: false, detail: "not running", survivors: [] };
 	}
-	try {
-		if (process.platform !== "win32") process.kill(-pid, "SIGKILL");
-		else process.kill(pid, "SIGKILL");
-	} catch {
+	const pid = job.pid;
+	const reports = [killProcessTree(pid).detail];
+	await sleep(KILL_GRACE_MS);
+	if (pidAlive(pid)) {
+		// Escalate once: taskkill can catch a launcher that is still shutting down, and a direct
+		// signal works even where taskkill is missing or blocked.
+		reports.push(`retry: ${killProcessTree(pid).detail}`);
 		try {
 			process.kill(pid, "SIGKILL");
 		} catch {
 			// Already gone.
+		}
+		await sleep(KILL_GRACE_MS);
+	}
+
+	const survivors = pidAlive(pid) ? [pid] : [];
+	let verdict: KillVerdict;
+	if (survivors.length > 0) verdict = "unconfirmed";
+	// An adopted job has no child handle: only its recorded pid was ever visible.
+	else if (!job.child) verdict = "unverified";
+	// Something that inherited the job's stdout is still running.
+	else if (!job.stdioClosed) verdict = "unconfirmed";
+	// Nothing visible survived. On Windows that is not proof of anything: taskkill walks recorded
+	// parent pids, and a child that re-parented past the shell is invisible to that walk.
+	else verdict = process.platform === "win32" ? "unverified" : "confirmed";
+
+	job.kill = { attempted: true, verdict, detail: reports.join(" · "), survivors };
+	return job.kill;
+}
+
+/** What the platform reported about one kill attempt. `ok` is not a claim that the tree is gone. */
+export interface TreeKillReport {
+	ok: boolean;
+	detail: string;
+}
+
+/**
+ * Kill a process and everything it spawned, and report what the platform said about it.
+ * Windows needs taskkill /T or grandchildren survive; on POSIX the child is detached
+ * (its own process group), so signalling the group is enough.
+ */
+export function killProcessTree(pid: number): TreeKillReport {
+	if (process.platform === "win32") {
+		const result = spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
+			// Piped rather than ignored: a taskkill that failed is the only diagnostic there is, and
+			// it must not reach a user-visible stream either — it goes into the verdict's detail.
+			encoding: "utf8",
+			timeout: 5_000,
+			windowsHide: true,
+		});
+		if (result.error) return { ok: false, detail: `taskkill failed: ${result.error.message}` };
+		const stderr = (result.stderr ?? "").trim().replace(/\s+/g, " ");
+		if (result.status !== 0) {
+			// "process not found" lands here too: a nonzero exit is not proof of failure, only of
+			// no work done, and the caller decides what is still alive.
+			return { ok: false, detail: `taskkill exit ${result.status}${stderr ? `: ${stderr}` : ""}` };
+		}
+		return { ok: true, detail: "taskkill exit 0" };
+	}
+	try {
+		process.kill(-pid, "SIGKILL");
+		return { ok: true, detail: "signal sent to process group" };
+	} catch {
+		try {
+			process.kill(pid, "SIGKILL");
+			return { ok: true, detail: "signal sent to pid" };
+		} catch (error) {
+			return { ok: false, detail: `signal failed: ${(error as Error).message}` };
 		}
 	}
 }
@@ -279,7 +374,8 @@ export function recentTail(job: Job, lines = 40): string {
 export function jobsSummary(job: Job): string {
 	const seconds = Math.round(((job.endedAt ?? Date.now()) - job.startedAt) / 1000);
 	const state = job.state === "exited" ? `exited (${job.exitCode})` : job.state;
-	return `${job.id} · ${state} · ${seconds}s · ${job.lines} lines · ${job.command.replace(/\s+/g, " ").slice(0, 80)}`;
+	const kill = job.kill?.verdict && job.kill.verdict !== "confirmed" ? ` · kill ${job.kill.verdict}` : "";
+	return `${job.id} · ${state} · ${seconds}s · ${job.lines} lines · ${job.command.replace(/\s+/g, " ").slice(0, 80)}${kill}`;
 }
 
 /**

@@ -26,6 +26,7 @@ import type { RunningServer } from "./laya.ts";
 import { startLayaServer } from "./laya.ts";
 import {
 	type Job,
+	type KillOutcome,
 	type RegistryEntry,
 	adoptJob,
 	appendEvent,
@@ -213,12 +214,39 @@ export default function (pi: ExtensionAPI) {
 
 	// ---------------------------------------------------------------- waking
 
+	/**
+	 * A kill the listener cannot vouch for has to say so in the wake. An unremarked kill that left a
+	 * process behind is how an orphaned dev server holding its port became "job-17 is healthy":
+	 * every observable angle except this sentence said the job was fine.
+	 */
+	function killWarning(job: Job): string {
+		const outcome = job.kill;
+		if (!outcome?.verdict || outcome.verdict === "confirmed") return "";
+		if (outcome.verdict === "unconfirmed") {
+			return outcome.survivors.length
+				? ` · KILL UNCONFIRMED — the tree may still be alive (survivors: ${outcome.survivors.join(", ")})`
+				: " · KILL UNCONFIRMED — a process still holds this job's output, so its tree may still be alive";
+		}
+		return " · KILL UNVERIFIED — nothing visible survived, but a child that re-parented past the shell would not be visible; a port that still answers is that child";
+	}
+
+	/** The same verdict, as a sentence for the jobs tool. */
+	function killResultText(job: Job, outcome: KillOutcome): string {
+		if (!outcome.attempted) return `${job.id} was not running.`;
+		if (outcome.verdict === "confirmed") return `Killed ${job.id} and its children.`;
+		const survivors = outcome.survivors.length ? `survivors: ${outcome.survivors.join(", ")}` : "survivor unknown";
+		if (outcome.verdict === "unconfirmed") {
+			return `${job.id}: the tree may still be alive (${survivors}). A port that still answers is that process — kill it by pid.`;
+		}
+		return `${job.id}: killed what was visible, but the tree could not be verified, so a child that re-parented past the shell would not be visible. Check the pid before trusting a port.`;
+	}
+
 	function pointer(job: Job, reason: string): string {
 		const seconds = Math.round(((job.endedAt ?? Date.now()) - job.startedAt) / 1000);
 		if (job.adopted) {
 			const state = reason === "stalled" ? `quiet for ${job.stallSeconds}s` : "ended";
 			return [
-				`[${job.id}] ${state} after ${seconds}s · started by a previous session, so the exit code is unknown`,
+				`[${job.id}] ${state} after ${seconds}s · started by a previous session, so the exit code is unknown${killWarning(job)}`,
 				`command: ${oneLine(job.command, 160)}`,
 				`intent: ${job.intent}`,
 				`log: ${job.logPath}`,
@@ -232,7 +260,7 @@ export default function (pi: ExtensionAPI) {
 					? `quiet for ${job.stallSeconds}s`
 					: reason;
 		return [
-			`[${job.id}] ${state} after ${seconds}s · ${job.lines} lines`,
+			`[${job.id}] ${state} after ${seconds}s · ${job.lines} lines${killWarning(job)}`,
 			`command: ${job.command.replace(/\s+/g, " ").slice(0, 160)}`,
 			`intent: ${job.intent}`,
 			`log: ${job.logPath}`,
@@ -327,6 +355,11 @@ export default function (pi: ExtensionAPI) {
 			exitCode: job.exitCode,
 			lines: job.lines,
 			seconds,
+			// Whether the tree actually died is part of the outcome, not a footnote: the kill's own
+			// diagnostics live here because nothing else records them.
+			kill: job.kill?.verdict,
+			survivors: job.kill?.survivors,
+			killDetail: job.kill?.detail,
 		});
 		if (job.registryKey) {
 			const [session, original] = job.registryKey.split(":");
@@ -748,16 +781,25 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (params.action === "kill") {
-				const killed = killJob(target);
-				logEvent({ event: "killed", job: target.id, by: "agent" });
+				const outcome = await killJob(target);
+				logEvent({
+					event: "killed",
+					job: target.id,
+					by: "agent",
+					attempted: outcome.attempted,
+					verdict: outcome.verdict,
+					survivors: outcome.survivors,
+					detail: outcome.detail,
+				});
 				return {
-					content: [
-						{
-							type: "text" as const,
-							text: killed ? `Killed ${target.id} and its children.` : `${target.id} was not running.`,
-						},
-					],
-					details: { job_id: target.id, killed },
+					content: [{ type: "text" as const, text: killResultText(target, outcome) }],
+					details: {
+						job_id: target.id,
+						killed: outcome.attempted && outcome.verdict === "confirmed",
+						verdict: outcome.verdict,
+						survivors: outcome.survivors,
+						detail: outcome.detail,
+					},
 				};
 			}
 
